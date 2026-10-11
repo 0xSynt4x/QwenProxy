@@ -209,7 +209,8 @@ OpenCode 里常用的：
 - **模型忘了工具 / 让你上传文件** —— 老会话没带工具提示。重启 OpenCode 会话（`/new`）。
 - **`accountStore.isAvailable is not a function`** —— node_modules 过期，`npm install`。
 - **`Failed to create a Qwen chat`** —— token 过期，重跑 `node scripts/capture-login.js`。
-- **`WAF_CAPTCHA_CHALLENGE`** —— 触发了阿里云风控验证码。**别高频打请求**，等约 30 分钟冷却（账号退避会自动过期）。
+- **`WAF_CAPTCHA_CHALLENGE`** —— 触发了阿里云风控验证码。**别高频打请求**，等约 30 分钟冷却（账号退避会自动过期）。实测风控记的是**账号**不是 IP，换出口代理没用。
+- **正文回「今日对话次数已达上限，请明日再来。」** —— 上游免费档的每日对话配额刷爆了，等第二天。这是上游文案，不是代理造的。
 - **Windows 上起不来 / 找不到浏览器** —— `.env` 里加 `PLAYWRIGHT_CHANNEL=chrome`。
 - **`QWEN_WEB_VERSION` 怎么设** —— 🔴 **保持 `0.2.83` 别动。** 线上前端实际是 `0.3.16`，但带 `0.3.16` 会被判 `Unauthorized`，带 `0.2.83` 才放行。
 
