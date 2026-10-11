@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Qwen Free API — локальный бесшовный OpenAI-прокси к Qwen Chat v2 API.
+ * Qwen Free API —— 面向 Qwen Chat v2 API 的本地无缝 OpenAI 代理。
  *
- * Обходит Aliyun WAF через генерацию SSXMOD-cookie в чистом JS
- * (без браузера на каждый запрос). Требуется только аккаунт Qwen Chat.
+ * 通过纯 JS 生成 SSXMOD cookie 绕过阿里云 WAF
+ * （每个请求无需启动浏览器）。只需一个 Qwen Chat 账号。
  *
  * Endpoints:
  *   GET  /v1/models
@@ -21,6 +21,7 @@ const config = require('./src/config');
 const accountStore = require('./src/account-store');
 const ssxmodManager = require('./src/ssxmod-manager');
 const qwenClient = require('./src/qwen-client');
+const tokenManager = require('./src/token-manager');
 const chatAdapter = require('./src/chat-adapter');
 const captchaResolver = require('./src/captcha-resolver');
 const tools = require('./src/tools');
@@ -36,12 +37,12 @@ const app = express();
 
 app.use(cors());
 app.use(express.json({ limit: config.MAX_PAYLOAD_BYTES }));
-app.use((req, res, next) => { res.setHeader('X-Service', 'qwen-free-api'); next(); });
+app.use((req, res, next) => { res.setHeader('X-Service', 'qwen-proxy'); next(); });
 
 // ---------- Diagnostics ----------
 app.get('/healthz', (req, res) => {
   res.json({
-    service: 'qwen-free-api',
+    service: 'qwen-proxy',
     ok: true,
     endpoints: ['/v1/models', '/v1/chat/completions', '/health', '/'],
     account: accountStore.isAccount() ? 'loaded' : 'missing',
@@ -124,11 +125,11 @@ app.post('/v1/chat/completions', async (req, res) => {
       });
     }
 
-    // If the last user message is a continuation request (e.g. "продолжи"), force rollover
+    // If the last user message is a continuation request (e.g. "продолжи" / "继续"), force rollover
     // to a fresh Qwen thread so stale upstream state on chat.qwen.ai never stalls the agent loop.
     const lastUser = [...(publicBody.messages || [])].reverse().find((m) => m?.role === 'user');
     const lastUserStr = (typeof lastUser?.content === 'string' ? lastUser.content : '').trim().toLowerCase();
-    const isContinuationTurn = lastUserStr.length <= 25 && /^(продолжи|продолжай|continue|go ahead|давай|делай|proceed)$/i.test(lastUserStr);
+    const isContinuationTurn = lastUserStr.length <= 25 && /^(продолжи|продолжай|continue|go ahead|давай|делай|proceed|继续|接着|往下|go on|keep going)$/i.test(lastUserStr);
 
     const rollover = Boolean((record && record.awaitingCompactedHistory && !compaction) || isContinuationTurn);
     const existingChatId = rollover ? null : record?.chatId || null;
@@ -173,8 +174,8 @@ app.post('/v1/chat/completions', async (req, res) => {
       });
     }
 
-    // Upstream с qwen-клиента всегда стримит (stream:true). Для non-stream агрегируем.
-    const upstream = response.response; // axios-респонса data (Readable stream)
+    // qwen 客户端的上游始终为流式（stream:true），非流式请求需自行聚合。
+    const upstream = response.response; // axios 响应的 data（Readable stream）
     res.setHeader('Content-Type', streamRequested ? 'text/event-stream' : 'application/json');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -183,6 +184,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       let json;
       try {
         json = await chatAdapter.collectNonStream(upstream, {
+          model: prepared.model,
           toolParser: prepared.hasTools ? tools.createToolCallStreamParser() : null,
         });
       } catch (err) {
@@ -203,6 +205,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             });
             try {
               json = await chatAdapter.collectNonStream(retry.response, {
+                model: retryPrepared.model,
                 toolParser: retryPrepared.hasTools ? tools.createToolCallStreamParser() : null,
               });
               return res.json(json);
@@ -218,6 +221,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
 
     await chatAdapter.pipeThroughOpenAI(upstream, res, {
+      model: prepared.model,
       toolParser: prepared.hasTools ? tools.createToolCallStreamParser() : null,
       requireToolCall: prepared.isContinuation || effectiveBody.tool_choice === 'required',
       maxEmptyRetries: 3,
@@ -354,6 +358,14 @@ web.attachWeb(app);
 try {
   accountStore.load();
   logger.info(`${accountStore.list().length} Qwen account(s) loaded`, 'ACCOUNT');
+  // 老账号文件没有 refreshToken 字段的，启动时从 cookie 里补上（不用重新登录）
+  for (const account of accountStore.candidates()) {
+    try {
+      tokenManager.backfillRefreshToken(account);
+    } catch (e) {
+      logger.warn(`Could not backfill refresh token for ${account.id}: ${e.message}`, 'TOKEN');
+    }
+  }
 } catch (e) {
   logger.warn(`No account yet (${e.message}). Run 'npm run login' or 'npm run accounts'.`, 'ACCOUNT');
 }

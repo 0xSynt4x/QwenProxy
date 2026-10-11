@@ -1,18 +1,18 @@
 'use strict';
 
 /**
- * context-compressor.js — Интеллектуальный модуль сжатия контекста и логов
- * Вдохновлен алгоритмами Headroom, RTK (Rust Token Killer) и LLMLingua.
+ * context-compressor.js —— 上下文与日志智能压缩模块
+ * 灵感来自 Headroom、RTK（Rust Token Killer）和 LLMLingua 的算法。
  */
 
 /**
  * 1. RTK (Rust Token Killer / Terminal Output Compressor)
- * Сжимает длинные выводы терминала (bash, git diff, npm, pytest, linters).
+ * 压缩冗长的终端输出（bash、git diff、npm、pytest、linters）。
  */
 function compressTerminalOutput(text) {
   if (typeof text !== 'string' || text.length < 500) return text;
 
-  // А) Сжатие Git Diff: сохраняет структуры файлов и измененные строки, вырезает неизмененный шум
+  // A) Git Diff 压缩：保留文件结构与改动行，剔除未改动的噪声
   if (text.includes('diff --git') || text.includes('--- a/') || text.includes('+++ b/')) {
     const lines = text.split('\n');
     const kept = [];
@@ -41,7 +41,7 @@ function compressTerminalOutput(text) {
     if (compressed.length < text.length) return compressed;
   }
 
-  // Б) Сжатие логов сборки / npm / pip / pytest: оставляет первичное описание и финальные ошибки
+  // B) 构建 / npm / pip / pytest 日志压缩：保留开头说明与末尾错误
   if (text.includes('npm ERR!') || text.includes('FAIL') || text.includes('Traceback (most recent call last)')) {
     const lines = text.split('\n');
     if (lines.length > 50) {
@@ -51,7 +51,7 @@ function compressTerminalOutput(text) {
     }
   }
 
-  // В) Если вывод универсального инструмента длиннее 3000 символов — компактно обрезаем серединку
+  // C) 通用工具输出超过 3000 字符时，紧凑地截掉中间部分
   if (text.length > 4000) {
     const head = text.slice(0, 1500);
     const tail = text.slice(-2000);
@@ -62,14 +62,14 @@ function compressTerminalOutput(text) {
 }
 
 /**
- * 2. Skeletonizer (Скелетонизация длинных исходных файлов)
- * Если в истории есть прочитанный файл > 1000 символов, который не является текущим вопросом,
- * сворачиваем внутренности функций, оставляя только импорты и сигнатуры.
+ * 2. Skeletonizer（长源码文件骨架化）
+ * 若历史中存在已读取、超过 1000 字符、且不是当前问题的文件，
+ * 则把函数内部折叠掉，只保留 import 与函数签名。
  */
 function skeletonizeCode(text) {
   if (typeof text !== 'string' || text.length < 2000) return text;
 
-  // Не трогаем, если это не блоковый код
+  // 不是成块的代码就不动
   if (!text.includes('function') && !text.includes('class') && !text.includes('def ')) return text;
 
   const lines = text.split('\n');
@@ -81,7 +81,7 @@ function skeletonizeCode(text) {
 }
 
 /**
- * 3. Semantic Word Trimmer (Удаление разговорного шума и вводных фраз)
+ * 3. Semantic Word Trimmer（去掉口语化噪声与开场白）
  */
 function trimSemanticNoise(text) {
   if (typeof text !== 'string' || text.length < 150) return text;
@@ -94,16 +94,16 @@ function trimSemanticNoise(text) {
 }
 
 /**
- * 4. Hierarchical History Aging (Иерархическое старение сообщений истории)
- *  - Hot Zone (последние 3 сообщения): без изменений (100% точность).
- *  - Warm Zone (сообщения от 4 до 10 назад): применение RTK и Skeletonizer.
- *  - Cold Zone (старше 10 сообщений): компактное сворачивание.
+ * 4. Hierarchical History Aging（历史消息分层老化）
+ *  - Hot Zone（最近 3 条消息）：保持不变（100% 精确）。
+ *  - Warm Zone（倒数第 4 到第 10 条）：应用 RTK 与 Skeletonizer。
+ *  - Cold Zone（超过 10 条）：紧凑折叠。
  */
 function compressConversationHistory(messages, options = {}) {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
 
   const total = messages.length;
-  // Сжимаем только если диалог достаточно разросся
+  // 只有对话足够长时才压缩
   if (total <= 4) return messages;
 
   return messages.map((msg, index) => {
@@ -111,14 +111,14 @@ function compressConversationHistory(messages, options = {}) {
 
     const distanceFromEnd = total - 1 - index;
 
-    // Hot Zone: Самый свежий контекст (последние 3 сообщения) — не трогаем
+    // Hot Zone：最新鲜的上下文（最近 3 条消息）—— 不动
     if (distanceFromEnd <= 2) {
       return msg;
     }
 
     let newContent = msg.content;
 
-    // Warm Zone: (сообщения от 3 до 8 шагов назад) — фильтрация логов и diff
+    // Warm Zone：（倒数第 3 到第 8 步）—— 过滤日志与 diff
     if (distanceFromEnd <= 8) {
       if (msg.role === 'tool' || msg.role === 'user') {
         newContent = compressTerminalOutput(newContent);
@@ -126,7 +126,7 @@ function compressConversationHistory(messages, options = {}) {
         newContent = trimSemanticNoise(newContent);
       }
     } else {
-      // Cold Zone: (старше 8 шагов назад) — глубокая скелетонизация и вырезка шума
+      // Cold Zone：（超过 8 步之前）—— 深度骨架化并剔除噪声
       if (msg.role === 'tool') {
         newContent = compressTerminalOutput(newContent);
       } else if (msg.role === 'assistant') {

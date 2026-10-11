@@ -2,11 +2,11 @@
 'use strict';
 
 /**
- * qwen-memo MCP server — stdio JSON-RPC 2.0 interface for qwen-free-api.
+ * qwen-memo MCP server — stdio JSON-RPC 2.0 interface for qwen-proxy.
  *
  * Real Dynamic Provider Detection:
- * Probes PROXY_URL/healthz for X-Service: qwen-free-api header and payload.
- * qwen-memo tools WILL ONLY RUN if the active provider is qwen-free-api!
+ * Probes PROXY_URL/healthz for X-Service: qwen-proxy header and payload.
+ * qwen-memo tools WILL ONLY RUN if the active provider is qwen-proxy!
  */
 
 const http = require('http');
@@ -21,7 +21,7 @@ const DEFAULT_MAX_CHARS = 800;
 
 /**
  * Probes the proxy health endpoint dynamically without hardcoding.
- * Verifies response header 'X-Service: qwen-free-api' and JSON payload.
+ * Verifies response header 'X-Service: qwen-proxy' and JSON payload.
  */
 function verifyQwenProviderActive() {
   return new Promise((resolve) => {
@@ -45,26 +45,26 @@ function verifyQwenProviderActive() {
         let json = {};
         try { json = JSON.parse(data); } catch (_) {}
 
-        const isQwenHeader = serviceHeader === 'qwen-free-api';
-        const isQwenService = json && json.service === 'qwen-free-api';
+        const isQwenHeader = serviceHeader === 'qwen-proxy';
+        const isQwenService = json && json.service === 'qwen-proxy';
 
         if (isQwenHeader || isQwenService) {
           resolve({ active: true });
         } else {
           resolve({
             active: false,
-            reason: `qwen-memo is disabled: active provider is not qwen-free-api (detected service: "${json.service || serviceHeader || 'unknown'}").`,
+            reason: `qwen-memo is disabled: active provider is not qwen-proxy (detected service: "${json.service || serviceHeader || 'unknown'}").`,
           });
         }
       });
     });
 
     req.on('error', (e) => {
-      resolve({ active: false, reason: `qwen-memo is disabled: qwen-free-api proxy is offline (${e.message}).` });
+      resolve({ active: false, reason: `qwen-memo is disabled: qwen-proxy proxy is offline (${e.message}).` });
     });
     req.setTimeout(1500, () => {
       req.destroy();
-      resolve({ active: false, reason: 'qwen-memo is disabled: qwen-free-api proxy health check timed out.' });
+      resolve({ active: false, reason: 'qwen-memo is disabled: qwen-proxy proxy health check timed out.' });
     });
     req.end();
   });
@@ -110,7 +110,7 @@ const TOOLS = [
     name: 'memo_recall',
     description: [
       'Recall previous conversation checkpoints, tool substeps, and timestamps stored in the current OpenCode session.',
-      'Active ONLY when qwen-free-api is the active provider.',
+      'Active ONLY when qwen-proxy is the active provider.',
     ].join('\n'),
     inputSchema: {
       type: 'object',
@@ -136,7 +136,7 @@ const TOOLS = [
   },
   {
     name: 'memo_sessions',
-    description: 'List how many sessions and tool results are currently stored in qwen-free-api proxy memory.',
+    description: 'List how many sessions and tool results are currently stored in qwen-proxy proxy memory.',
     inputSchema: { type: 'object', properties: {} },
   },
 ];

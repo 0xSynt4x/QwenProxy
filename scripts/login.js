@@ -2,10 +2,10 @@
 'use strict';
 
 /**
- * login.js — сохраняет или обновляет аккаунт Qwen Chat в config/accounts/<id>.json.
+ * login.js — 保存或刷新 Qwen Chat 账号到 config/accounts/<id>.json。
  *
- * Открывает настоящий браузер (Playwright Chromium) на chat.qwen.ai.
- * Если передан --relogin, старый токен не подставляется, скрипт ожидает нового входа пользователя.
+ * 会打开真浏览器（Playwright）访问 chat.qwen.ai。
+ * 传了 --relogin 就不复用旧 token，会等用户重新登录。
  */
 const config = require('../src/config');
 const accountStore = require('../src/account-store');
@@ -23,16 +23,16 @@ const accountId = accountArgIdx >= 0 ? args[accountArgIdx + 1] : undefined;
 const captchaArgIdx = args.indexOf('--captcha');
 const captchaUrl = captchaArgIdx >= 0 ? args[captchaArgIdx + 1] : undefined;
 
-// ---- Ручной ввод токена ----
+// ---- 手动输入 token ----
 if (useManual) {
   console.log(`
-=== РУЧНОЙ ВВОД ТОКЕНА QWEN ===
+=== 手动输入 QWEN TOKEN ===
 
-1. Открой https://chat.qwen.ai и войди в аккаунт.
+1. 打开 https://chat.qwen.ai 并登录你的账号。
 2. F12 -> Application -> Local Storage -> https://chat.qwen.ai
-3. Скопируй значение ключа "token" (JWT, начинается с eyJ...).
+3. 复制 "token" 这个键的值（JWT，以 eyJ 开头）。
 
-Вставь токен ниже и нажми Enter:
+把 token 粘到下面然后回车：
 `);
   process.stdout.write('> ');
   const { stdin } = process;
@@ -43,11 +43,11 @@ if (useManual) {
     if (input.includes('\n')) {
       const token = input.trim().split('\n').pop().trim();
       if (!token) {
-        logger.error('Пустой токен.', 'LOGIN');
+        logger.error('token 是空的。', 'LOGIN');
         process.exit(1);
       }
       accountStore.save({ token, email: accountId || 'manual', cookie: [], savedAt: Date.now() }, accountId);
-      logger.info('Токен сохранён.', 'LOGIN');
+      logger.info('token 已保存。', 'LOGIN');
       process.exit(0);
     }
   });
@@ -59,7 +59,7 @@ try {
   playwright = require('playwright');
 } catch (e) {
   logger.error(
-    'Playwright не установлен. Запусти: npm i playwright && npx playwright install chromium (или используй --manual)',
+    'Playwright 没装。跑：npm i playwright && npx playwright install chromium（或者用 --manual）',
     'LOGIN',
     e
   );
@@ -71,7 +71,7 @@ try {
   const existingAcc = accountId ? accountStore.get(accountId) : null;
   const initialToken = (existingAcc && !isRelogin) ? existingAcc.token : null;
 
-  logger.info('Запуск Chromium… (если появится капча WAF — пройди слайдер в окне)', 'LOGIN');
+  logger.info('正在启动浏览器…（如果出现 WAF 滑块，在窗口里过一下）', 'LOGIN');
 
   const browser = await playwright.chromium.launch({
     headless,
@@ -97,11 +97,11 @@ try {
     } catch (_) {}
   });
 
-  // Открываем целевую страницу
+  // 打开目标页
   const targetUrl = captchaUrl || config.BASE_URL;
   await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
 
-  // Очищаем старые токены из браузера перед логином, чтобы не захватить токен предыдущего аккаунта
+  // 登录前清掉浏览器里的旧 token，免得抓到上一个账号的
   await page.evaluate(() => {
     try {
       window.localStorage.removeItem('token');
@@ -111,9 +111,9 @@ try {
   });
 
   if (!cookieOnly) {
-    logger.info('Войди в нужный аккаунт Qwen в открывшемся окне браузера…', 'LOGIN');
+    logger.info('在打开的浏览器窗口里登录你的 Qwen 账号…', 'LOGIN');
     
-    // Ждём появления НОВОГО токена после входа пользователя
+    // 等用户登录后出现的新 token
     await page.waitForFunction(
       (oldTok) => {
         const t = window.localStorage.getItem('token') || window.localStorage.getItem('active_token');
@@ -124,13 +124,13 @@ try {
       initialToken,
       { timeout: 5 * 60 * 1000 }
     );
-    // Даём пару секунд на завершение сетевых профильных запросов
+    // 留两秒让资料请求跑完
     await page.waitForTimeout(2000);
   } else {
     await page.waitForTimeout(4000);
   }
 
-  // Извлекаем токен и реальный Email/Username
+  // 取 token 和真实的邮箱/用户名
   const extracted = await page.evaluate(async () => {
     let tok = window.localStorage.getItem('token') || window.localStorage.getItem('active_token');
     if (!tok) {
@@ -142,7 +142,7 @@ try {
     }
 
     let email = '';
-    // 1) Попытка получить профиль от API Qwen
+    // 1) 先从 Qwen API 拿资料
     try {
       const res = await fetch('/api/v1/auths/');
       if (res.ok) {
@@ -151,7 +151,7 @@ try {
       }
     } catch (_) {}
 
-    // 2) Попытка найти email в localStorage
+    // 2) 再从 localStorage 里找邮箱
     if (!email) {
       for (let i = 0; i < window.localStorage.length; i += 1) {
         const k = window.localStorage.key(i) || '';
@@ -167,7 +167,7 @@ try {
       }
     }
 
-    // 3) Попытка декодировать JWT payload
+    // 3) 最后解 JWT payload
     if (!email && tok && tok.includes('.')) {
       try {
         const parts = tok.split('.');
@@ -183,11 +183,11 @@ try {
   try {
     cookieJar = await context.cookies();
   } catch (e) {
-    logger.warn('Не удалось снять cookies: ' + e.message, 'LOGIN');
+    logger.warn('没能取到 cookie: ' + e.message, 'LOGIN');
   }
 
   if (!extracted.token) {
-    logger.error('Токен не найден. Логин не завершён.', 'LOGIN');
+    logger.error('没找到 token，登录没完成。', 'LOGIN');
     await browser.close();
     process.exit(1);
   }
@@ -219,10 +219,10 @@ try {
     accountId
   );
 
-  logger.info(`✅ Успешно! Аккаунт [${saved.id}] (${saved.email}) сохранён.`, 'LOGIN');
+  logger.info(`✅ 成功！账号 [${saved.id}] (${saved.email}) 已保存。`, 'LOGIN');
   await browser.close();
   process.exit(0);
 })().catch((e) => {
-  logger.error('Ошибка в процессе входа: ' + e.message, 'LOGIN', e);
+  logger.error('登录过程出错：' + e.message, 'LOGIN', e);
   process.exit(1);
 });

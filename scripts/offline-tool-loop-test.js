@@ -159,7 +159,7 @@ const TOOL_TURN_MESSAGES = [
         async sendChatRequest(payload) {
           retryPayloads.push(payload);
           if (retryPayloads.length === 1) {
-            // Пустой стрим без единого кадра -> parseQwenSSE отдаёт frames=0 ошибку.
+            // 空流、一帧都没有 -> parseQwenSSE 返回 frames=0 错误。
             return { status: true, response: Readable.from([]), account: { id: 'mock' } };
           }
           return {
@@ -176,8 +176,8 @@ const TOOL_TURN_MESSAGES = [
     if (request === './tool-executor') return toolExecutorMock;
     return origLoad.call(this, request, parent, isMain);
   };
-  // Пере-требуем agent и chat-adapter, чтобы их привязка к './qwen-client'
-  // указывала на retry-мок (кэш предыдущих тестов иначе держит старый мок).
+  // 重新 require agent 和 chat-adapter，让它们对 './qwen-client' 的引用
+  // 指向 retry 版 mock（否则前几个测试的 require 缓存会留着旧 mock）。
   for (const m of ['../src/agent', '../src/chat-adapter']) {
     delete require.cache[require.resolve(m)];
   }

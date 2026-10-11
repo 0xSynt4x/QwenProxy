@@ -9,13 +9,13 @@ const compressor = require('./context-compressor');
 const { generateUUID, logger } = require('./util');
 
 /**
- * Мост между OpenAI-форматом (клиент) и Qwen Chat v2 SSE-форматом.
+ * OpenAI 格式（客户端）与 Qwen Chat v2 SSE 格式之间的桥梁。
  *
- * КРИТИЧНО: upstream chat/completions не принимает «минимальное» тело — только
- * точную форму запроса, которую шлёт живой SPA (version:'2.1', полная обёртка
- * сообщения с user_action/files/models/feature_config/extra.meta.subChatType).
- * При любой другой форме Aliyun WAF отвечает FAIL_SYS_USER_VALIDATE (x5sec-капча).
- * Это тело сверено с живым FE 0.2.83 (см. browser-inspect.js / browser-matrix.js).
+ * 关键：上游 chat/completions 不接受「精简」请求体 —— 只接受
+ * 线上 SPA 实际发出的那份精确请求形态（version:'2.1'，带完整消息包装
+ * user_action/files/models/feature_config/extra.meta.subChatType）。
+ * 换成任何其它形态，阿里云 WAF 都会返回 FAIL_SYS_USER_VALIDATE（x5sec 验证码）。
+ * 该请求体已与线上 FE 0.2.83 逐字核对（见 browser-inspect.js / browser-matrix.js）。
  */
 
 const getChatType = (model) => {
@@ -93,9 +93,9 @@ function compactSystemInstructions(value) {
 }
 
 /**
- * Qwen web принимает ОДНО текущее сообщение. Историю сворачиваем в JSONL-конверт,
- * как делает сам интерфейс во время мультитарна. Если есть tool-протокол, внедряем
- * его в начало конверта и раскладываем tool_calls/результаты в читаемый текст.
+ * Qwen web 只接收当前这一条消息。历史会被折叠成 JSONL 信封，
+ * 与界面自身在多轮对话中的做法一致。若启用了工具协议，则把它注入
+ * 信封开头，并把 tool_calls/结果摊平成可读文本。
  */
 function stripCommandMessages(messages) {
   if (!Array.isArray(messages)) return [];
@@ -221,7 +221,7 @@ function foldMessages(rawMessages, toolPrompt = '', options = {}) {
   if (options.isContinuation) {
     parts.push(
       '### Continuation Instruction:',
-      'The user sent a continuation request ("продолжи" / "continue").',
+      'The user sent a continuation request ("продолжи" / "continue" / "继续").',
       'DO NOT write explanatory status text, TODO lists, or planning chatter outside <think>.',
       'Execute the next step immediately using a <tool_call> block (e.g. write_file, replace_file_content, bash).',
     );
@@ -230,7 +230,7 @@ function foldMessages(rawMessages, toolPrompt = '', options = {}) {
 }
 
 /**
- * Собрать полноценное тело запроса chat/completions (форма живого SPA 0.2.83).
+ * 组装完整的 chat/completions 请求体（线上 SPA 0.2.83 的形态）。
  */
 function buildChatBody(chatId, model, messages, thinking, toolPrompt = '', search = false, options = {}) {
   const baseType = getChatType(model);
@@ -280,7 +280,7 @@ function buildChatBody(chatId, model, messages, thinking, toolPrompt = '', searc
 }
 
 /**
- * Подготовка запроса: создать chat_id и построить тело.
+ * 请求准备：创建 chat_id 并构建请求体。
  */
 async function preparePublicPayload(openaiBody, options = {}) {
   const model = openaiBody.model || config.DEFAULT_MODEL;
@@ -301,7 +301,7 @@ async function preparePublicPayload(openaiBody, options = {}) {
 
   const lastUserMsg = [...(openaiBody.messages || [])].reverse().find((m) => m?.role === 'user');
   const lastUserText = (typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : '').trim().toLowerCase();
-  const isContinuation = lastUserText.length <= 25 && /^(продолжи|продолжай|continue|go ahead|давай|делай|proceed)$/i.test(lastUserText);
+  const isContinuation = lastUserText.length <= 25 && /^(продолжи|продолжай|continue|go ahead|давай|делай|proceed|继续|接着|往下|go on|keep going)$/i.test(lastUserText);
 
   let effectiveToolChoice = openaiBody.tool_choice;
   if (isContinuation && Array.isArray(openaiBody.tools) && openaiBody.tools.length > 0 && !effectiveToolChoice) {
@@ -327,15 +327,14 @@ async function preparePublicPayload(openaiBody, options = {}) {
     throw new Error('Failed to create a Qwen chat (session/WAF). Re-login with `npm run login`.');
   }
 
-  // Инвариант: существующий chatId означает, что Qwen-тред УЖЕ получил полный
-  // folded-конверт первым сообщением и далее помнит каждый ход, включая текст
-  // `<tool_call>` ассистента. Поэтому при любом продолжении треда — и для
-  // tool-ходов тоже — отправляем ТОЛЬКО текущее сообщение (currentOnly). Иначе
-  // foldMessages вкладывал всю клиентскую историю в content каждого tool-хода
-  // поверх серверной истории: на 2-м ходе Qwen видел историю дважды, на 3-м —
-  // трижды (рост O(n^2)) и путался, видя свои ответы внутри user-сообщений.
-  // Сценарий «изолированного tool-результата без исходного tool call» относится
-  // только к НОВОМУ треду — а у него chatId нет, и currentOnly остаётся false.
+  // 不变量：已存在 chatId 说明 Qwen 会话已经通过首条消息收到了完整的
+  // 折叠信封，并且之后记得每一轮，包括 assistant 的 `<tool_call>` 文本。
+  // 因此该会话的任何后续轮次 —— 工具调用轮次也一样 —— 都只发送当前消息
+  // （currentOnly）。否则 foldMessages 会把整段客户端历史塞进每个工具
+  // 轮次的 content 里，叠在服务端历史之上：第 2 轮 Qwen 会看到两遍历史，
+  // 第 3 轮三遍（O(n^2) 增长），并在 user 消息里看到自己的回答而混乱。
+  // 「没有对应 tool call 的孤立 tool 结果」这一场景只出现在新会话上 ——
+  // 新会话没有 chatId，currentOnly 仍为 false。
   const sessionKey = options.sessionKey || null;
 
   // Auto-capture tool responses into memo before building this turn's payload
@@ -366,7 +365,7 @@ async function preparePublicPayload(openaiBody, options = {}) {
       }
     }
 
-    // Синхронизируем иерархию шагов и таймштампов всей сессии
+    // 同步整段会话的步骤层级与时间戳
     toolMemo.syncMessages(sessionKey, openaiBody.messages);
 
     // Intercept memo_recall tool calls: synthesize the response in-proxy
@@ -421,16 +420,19 @@ async function preparePublicPayload(openaiBody, options = {}) {
 const THINK_PHASES = new Set(['think', 'thinking', 'thinking_summary']);
 
 /**
- * Разбор upstream SSE. Каждый значимый фрагмент вызывает onData(line).
- *  - thinking_summary: `extra.summary_thought.content` — растущий массив абзацев,
- *    выдаём только новые (инкрементально), чтобы не дублировать reasoning.
- *  - answer: content. Если включён tool-режим, контент прогоняется через
- *    XML-парсер и транслируется в OpenAI tool_calls delta.
+ * 解析上游 SSE。每个有效片段都会调用 onData(line)。
+ *  - thinking_summary：`extra.summary_thought.content` —— 不断增长的段落数组，
+ *    只输出新增部分（增量），避免重复发送 reasoning。
+ *  - answer：content。若启用了工具模式，内容会经过
+ *    XML 解析器并转换为 OpenAI tool_calls 增量。
  */
 function parseQwenSSE(stream, onData, onDone, opts = {}) {
   const toolParser = opts.toolParser || null;
   const idleTimeout = Number(opts.idleTimeout || config.STREAM_IDLE_TIMEOUT_MS);
   const requireToolCall = Boolean(opts.requireToolCall);
+  // 回填到每个 chunk 的 model 字段：客户端（Cherry Studio / OpenCode 等）靠它识别模型，
+  // 原版硬写空串，某些客户端会因此报「未知模型」。
+  const responseModel = opts.model || config.DEFAULT_MODEL;
 
   let buffer = '';
   let seq = 0;
@@ -444,6 +446,8 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
   let lastFrameShape = '';
   let inThinkBlock = false;
   let thinkBuffer = '';
+  // 刚闭合 </think> 时置位：下一个片段开头的换行要吃掉（网页端也这么做）。
+  let justClosedThink = false;
   let lastUsage = null;
 
   let bufferedDataLines = [];
@@ -469,11 +473,21 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
     const OPEN_TAG = /<think(?:ing)?>/i;
     const CLOSE_TAG = /<\/think(?:ing)?>/i;
 
+    // 模型在 `</think>` 之后习惯多敲一两个换行，真实网页端会吃掉它们。
+    // 不吃掉的话，客户端看到的正文开头就是空行。
+    // 注意换行可能横跨好几个上游分片，所以用一个标志位跨调用保留。
+    const takeDirect = (text) => {
+      if (!justClosedThink) return text;
+      const trimmed = text.replace(/^[\r\n]+/, '');
+      if (trimmed.length > 0) justClosedThink = false;
+      return trimmed;
+    };
+
     while (thinkBuffer.length > 0) {
       if (!inThinkBlock) {
         const match = thinkBuffer.match(OPEN_TAG);
         if (match) {
-          const before = thinkBuffer.slice(0, match.index);
+          const before = takeDirect(thinkBuffer.slice(0, match.index));
           if (before) directContent += before;
           inThinkBlock = true;
           thinkBuffer = thinkBuffer.slice(match.index + match[0].length);
@@ -483,18 +497,19 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
         const openIdx = thinkBuffer.indexOf('<');
         if (openIdx !== -1) {
           if (openIdx > 0) {
-            directContent += thinkBuffer.slice(0, openIdx);
+            const head = takeDirect(thinkBuffer.slice(0, openIdx));
+            if (head) directContent += head;
             thinkBuffer = thinkBuffer.slice(openIdx);
           }
           if (!flush && ('<thinking>'.startsWith(thinkBuffer.toLowerCase()) || '<think>'.startsWith(thinkBuffer.toLowerCase()))) {
             break;
           } else {
-            directContent += thinkBuffer;
+            directContent += takeDirect(thinkBuffer);
             thinkBuffer = '';
             break;
           }
         } else {
-          directContent += thinkBuffer;
+          directContent += takeDirect(thinkBuffer);
           thinkBuffer = '';
           break;
         }
@@ -511,6 +526,7 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
             onData(`data: ${JSON.stringify(chunk)}\n\n`);
           }
           inThinkBlock = false;
+          justClosedThink = true;
           thinkBuffer = thinkBuffer.slice(matchEnd.index + matchEnd[0].length);
           continue;
         }
@@ -525,7 +541,9 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
             onData(`data: ${JSON.stringify(chunk)}\n\n`);
             thinkBuffer = thinkBuffer.slice(closeIdx);
           }
-          if (!flush && ('</thinking>'.startsWith(thinkBuffer.toLowerCase()) || '<think>'.startsWith(thinkBuffer.toLowerCase()))) {
+          // 闭标签可能被上游切成 `</`、`</think`、`</thinking` 三段到达，
+          // 这里等它长成完整标签再切；否则立刻把缓冲当正文吐出去。
+          if (!flush && ('</thinking>'.startsWith(thinkBuffer.toLowerCase()) || '</think>'.startsWith(thinkBuffer.toLowerCase()))) {
             break;
           } else {
             emittedOutput = true;
@@ -548,9 +566,9 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
     return directContent;
   };
 
-  // Upstream часто открывает несколько конкурирующих кандидатных ответов
-  // (разные response_id), чьи инкрементальные кадры перемешаны. Локимся на
-  // первый response_id и отбрасываем остальные, иначе ответ "разъезжается".
+  // 上游经常同时打开多个互相竞争的候选回答
+  // （不同的 response_id），它们的增量帧是混在一起的。这里锁定
+  // 第一个 response_id 并丢弃其余，否则回答会「串台」。
   const acceptFrame = (json) => {
     const rid = json && json.response_id;
     if (!rid) return true;
@@ -564,7 +582,7 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
       id: `chatcmpl-${seq}`,
       object: 'chat.completion.chunk',
       created: Math.floor(Date.now() / 1000),
-      model: '',
+      model: responseModel,
       choices: [{ index: 0, delta: {}, finish_reason: null }],
     };
   };
@@ -609,7 +627,7 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
           id: `chatcmpl-${seq}`,
           object: 'chat.completion.chunk',
           created: Math.floor(Date.now() / 1000),
-          model: '',
+          model: responseModel,
           choices: [],
           usage: lastUsage,
         };
@@ -736,11 +754,11 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
       emitData(`data: ${JSON.stringify(chunk)}\n\n`);
     }
 
-    // Некоторые версии Qwen завершают SSE кадром `status: finished` без
-    // отдельного `data: true` или `[DONE]`.
-    // В зависимости от типа запроса Qwen может не прислать phase в финальном
-    // кадре. Не закрываем thinking-кадры, но принимаем finished для answer
-    // или кадра, содержащего поле content.
+    // 某些版本的 Qwen 用 `status: finished` 帧结束 SSE，而不发
+    // 单独的 `data: true` 或 `[DONE]`。
+    // 取决于请求类型，Qwen 可能不在最后一帧里带 phase。
+    // 这里不关闭 thinking 帧，但接受 answer 的 finished
+    // 或任何带 content 字段的帧。
     const finishedAnswer =
       delta.status === 'finished' &&
       (phase === 'answer' ||
@@ -833,9 +851,10 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
   return stream;
 }
 
-/** Агрегирующий non-stream путь: вернуть OpenAI JSON. */
+/** 非流式聚合路径：返回 OpenAI JSON。 */
 async function collectNonStream(stream, opts = {}) {
   const toolParser = opts.toolParser || null;
+  const responseModel = opts.model || config.DEFAULT_MODEL;
   const contentParts = [];
   const reasoningParts = [];
   const toolCalls = [];
@@ -887,18 +906,23 @@ async function collectNonStream(stream, opts = {}) {
       parsedCalls = parsed.toolCalls.map((c, i) => ({ ...c, index: i }));
     }
   }
+  // 上游把 `</think>` 后面的残留换行原样吐出来，真实网页端会吃掉，这里也吃掉，
+  // 否则客户端看到的正文开头会多出两个空行。
+  if (cleanedText) cleanedText = cleanedText.replace(/^\s*\n+/, '');
   const hasTool = parsedCalls.length > 0;
   const assistant = {
     role: 'assistant',
     content: cleanedText || null,
-    reasoning_content: reasoningParts.join('\n'),
+    // 🔴 必须是 join('')：上游按分片边界切开的思维链片段，用 '\n' 拼会在片段之间
+    // 凭空插入换行，思维链会被切得七零八落（正文走 join('') 所以没这个问题）。
+    reasoning_content: reasoningParts.join(''),
   };
   if (hasTool) assistant.tool_calls = parsedCalls;
   return {
     id: `chatcmpl-${Date.now()}`,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
-    model: '',
+    model: responseModel,
     choices: [
       {
         index: 0,
@@ -910,7 +934,7 @@ async function collectNonStream(stream, opts = {}) {
   };
 }
 
-/** Прокинуть SSE клиенту и завершить поток (streaming path). */
+/** 把 SSE 转发给客户端并结束流（streaming path）。 */
 async function pipeThroughOpenAI(stream, res, opts = {}) {
   const toolParser = opts.toolParser || null;
   const retryEmpty = typeof opts.retryEmpty === 'function' ? opts.retryEmpty : null;
@@ -943,7 +967,7 @@ async function pipeThroughOpenAI(stream, res, opts = {}) {
           id: `chatcmpl-${Date.now()}`,
           object: 'chat.completion.chunk',
           created: Math.floor(Date.now() / 1000),
-          model: '',
+          model: opts.model || config.DEFAULT_MODEL,
           choices: [
             {
               index: 0,
@@ -957,7 +981,7 @@ async function pipeThroughOpenAI(stream, res, opts = {}) {
         res.end();
         resolve();
       },
-      { toolParser },
+      { toolParser, model: opts.model },
     );
     currentStream.on('error', () => {
       try {

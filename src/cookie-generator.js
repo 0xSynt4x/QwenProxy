@@ -1,19 +1,19 @@
 'use strict';
 
 /**
- * Генератор SSXMOD-cookie для Qwen (ssxmod_itna / ssxmod_itna2).
- * Эти два cookie — «отпечаток устройства», который сервер Alibaba принимает
- * как доказательство реального браузера. Генерируются в чистом JS:
- * fingerprint (37 полей) -> LZW-compress -> custom-base64 -> "1-<encoded>".
+ * 为 Qwen 生成 SSXMOD cookie（ssxmod_itna / ssxmod_itna2）。
+ * 这两个 cookie 是「设备指纹」，阿里服务端据此认定请求来自真实浏览器。
+ * 全部用纯 JS 生成：
+ * fingerprint（37 字段）-> LZW 压缩 -> 自定义 base64 -> "1-<encoded>"。
  *
- * Алгоритм сверен с рабочим reverse-engineered референсом (Rfym21/Qwen2API).
+ * 算法已与可用的逆向参考实现（Rfym21/Qwen2API）核对过。
  */
 
 const { generateFingerprint } = require('./fingerprint');
 
-// Позиции хэш-полей, которые должен рандомизировать (не проверяются по содержанию).
+// 需要随机化的哈希字段位置（内容不做校验）。
 const HASH_FIELDS = {
-  16: 'split', //  plugins hash (count|hash) — заменяем hash
+  16: 'split', //  plugins hash (count|hash) —— 替换其中的 hash
   17: 'full', //  canvas hash
   18: 'full', //  UA hash1
   31: 'full', //  UA hash2
@@ -117,7 +117,7 @@ function lzwCompress(data, bits, charFunc) {
     }
   }
 
-  // Конец потока
+  // 流结束
   pushBits(numBits, 2);
   while (true) {
     value = value << 1;
@@ -149,7 +149,7 @@ function customEncode(data, urlSafe) {
   return compressed;
 }
 
-// ==================== Обработка fingerprint ====================
+// ==================== fingerprint 处理 ====================
 const randomHash = () => Math.floor(Math.random() * 4294967296);
 
 function processFields(fields) {
@@ -177,9 +177,9 @@ function processFields(fields) {
 }
 
 /**
- * Сгенерировать пару ssxmod cookies.
- * @param {string} [fingerprint] - готовый 37-пол. fingerprint (или сгенерить).
- * @param {Object} [opts] - опции fingerprint (platform/screen/locale).
+ * 生成一对 ssxmod cookie。
+ * @param {string} [fingerprint] - 现成的 37 字段 fingerprint（不传则现生成）。
+ * @param {Object} [opts] - fingerprint 选项（platform/screen/locale）。
  */
 function generateCookies(fingerprint = null, opts = {}) {
   const fp = fingerprint || generateFingerprint(opts);
@@ -189,7 +189,7 @@ function generateCookies(fingerprint = null, opts = {}) {
   const itnaData = processed.join('^');
   const ssxmod_itna = '1-' + customEncode(itnaData, true);
 
-  // ssxmod_itna2 = подмножество полей (18)
+  // ssxmod_itna2 = 字段子集（18 个）
   const itna2Data = [
     processed[0], // deviceId
     processed[1], // sdkVersion

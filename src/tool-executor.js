@@ -7,9 +7,9 @@ const os = require('os');
 const { logger } = require('./util');
 
 /**
- * Локальные инструменты агента: терминал (bash), доступ к файлам и веб-поиск.
- * Работают внутри рабочей директории (workspace) — как "песочницы" для файлов.
- * Терминал по умолчанию разрешён, но путь к workspace пользователь задаёт сам.
+ * Agent 的本地工具：终端（bash）、文件访问与网络搜索。
+ * 都在工作目录（workspace）内运行 —— 相当于文件的「沙箱」。
+ * 终端默认放开，但 workspace 路径由用户自行指定。
  */
 
 const DEFAULT_WORKSPACE = process.env.QWEN_WORKSPACE || path.join(os.homedir(), 'qwen-workspace');
@@ -72,7 +72,7 @@ function formatLs(rows) {
 }
 
 const HANDLERS = {
-  // ---- Терминал ----
+  // ---- 终端 ----
   bash: async (args) => {
     const command = String(args.command || '').trim();
     if (!command) return 'Empty command';
@@ -86,7 +86,7 @@ const HANDLERS = {
     return stdout;
   },
 
-  // ---- Файлы (внутри workspace) ----
+  // ---- 文件（限定在 workspace 内） ----
   list_dir: async (args) => {
     const dir = resolveInsideWorkspace(args.path || '.');
     const rows = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
@@ -127,7 +127,7 @@ const HANDLERS = {
     return `Appended to ${file}`;
   },
 
-  // ---- Веб-поиск ----
+  // ---- 网络搜索 ----
   web_search: async (args) => {
     const raw = args.query ?? args.q ?? (Array.isArray(args.queries) ? args.queries.join(' ') : args.queries);
     const query = String(raw || '').trim();

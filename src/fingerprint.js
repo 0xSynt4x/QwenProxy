@@ -1,11 +1,11 @@
 'use strict';
 
 /**
- * Генератор 37-field browser fingerprint для Qwen SSXMOD.
- * Поля соединяются через '^'. Определённые хэш-поля рандомизируются,
- * потому что сервер не сверяет их точное значение (требует лишь валидной структуры).
+ * Qwen SSXMOD 用的 37 字段浏览器指纹生成器。
+ * 各字段用 '^' 连接。部分哈希字段会被随机化，
+ * 因为服务端并不校验它们的确切取值（只要求结构合法）。
  *
- * Актуальный FE шаблон websdk-2.3.15d / Apple-платформы — эталонный RN клиента.
+ * 当前 FE 模板为 websdk-2.3.15d / Apple 平台 —— 客户端 RN 的基准值。
  */
 
 const DEFAULT_TEMPLATE = {
@@ -84,9 +84,9 @@ const generateDeviceId = () =>
 const generateHash = () => Math.floor(Math.random() * 4294967296);
 
 /**
- * Собрать 37-полевый fingerprint.
+ * 组装 37 字段指纹。
  * @param {Object} [options]
- * @returns {string} поля через '^'
+ * @returns {string} 以 '^' 连接的字段
  */
 function generateFingerprint(options = {}) {
   const config = { ...DEFAULT_TEMPLATE };

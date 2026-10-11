@@ -9,6 +9,7 @@ config/models-cache.json
 config/chats/*.json
 config/opencode-sessions.json
 config/browser-profile/
+.chrome-profile/
 qwen-workspace/
 
 # Logs, test output and local tooling

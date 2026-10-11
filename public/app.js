@@ -1,4 +1,4 @@
-/* Qwen Chat web app — клиентская логика. */
+/* Qwen 代理 — 网页端逻辑。 */
 
 'use strict';
 
@@ -39,7 +39,7 @@ function scrollDown() {
   m.scrollTop = m.scrollHeight;
 }
 
-/* ---------------- Markdown-lite (безопасно, без textContent->innerHTML уязвимостей) ---------------- */
+/* ---------------- 轻量 Markdown（安全，不走 textContent→innerHTML 那类注入路径） ---------------- */
 
 function inline(t) {
   return t
@@ -129,7 +129,7 @@ function appendUser(text) {
   wrap.className = 'msg msg-user';
   const role = document.createElement('div');
   role.className = 'msg-role';
-  role.textContent = 'Вы';
+  role.textContent = '你';
   const bubble = document.createElement('div');
   bubble.className = 'bubble bubble-user';
   bubble.textContent = text;
@@ -145,7 +145,7 @@ function addReasoningChunk(text) {
     a.reasonEl = document.createElement('details');
     a.reasonEl.className = 'reasoning streaming';
     a.reasonEl.open = true;
-    a.reasonEl.innerHTML = `<summary class="reason-summary"><svg class="brain-icon"><use href="#i-brain"/></svg> <span>Размышления (Thinking)</span></summary><div class="reason-text"></div>`;
+    a.reasonEl.innerHTML = `<summary class="reason-summary"><svg class="brain-icon"><use href="#i-brain"/></svg> <span>推理过程</span></summary><div class="reason-text"></div>`;
     a.reasonText = a.reasonEl.querySelector('.reason-text');
     a.bubble.appendChild(a.reasonEl);
   }
@@ -171,7 +171,7 @@ function addTool(name, args) {
   card.className = 'tool-card';
   card.innerHTML =
     `<div class="tool-head">${toolIcon(name)}<span class="name">${escapeHtml(name)}</span>` +
-    `<span class="state running">работает…</span></div>` +
+    `<span class="state running">运行中…</span></div>` +
     `<div class="tool-payload">${escapeHtml(JSON.stringify(args, null, 2))}</div>`;
   a.bubble.appendChild(card);
   (a.toolQueue ||= []).push(card);
@@ -183,7 +183,7 @@ function addToolResult(name, output) {
   const card = (a.toolQueue || []).shift();
   if (card) {
     const stateEl = card.querySelector('.state');
-    stateEl.textContent = 'готово';
+    stateEl.textContent = '完成';
     stateEl.classList.remove('running');
     const payload = card.querySelector('.tool-payload');
     payload.textContent = String(output).slice(0, 6000);
@@ -249,7 +249,7 @@ function addError(msg) {
   const a = appendAssistant();
   const p = document.createElement('p');
   p.className = 'error-line';
-  p.textContent = 'Ошибка: ' + msg;
+  p.textContent = '出错：' + msg;
   a.bubble.appendChild(p);
 }
 
@@ -308,9 +308,9 @@ async function sendMessage(text) {
     autosize();
     refreshList();
     if (state.chatId) {
-      // обновить заголовок чата после поиска
+      // 检索后刷新会话标题
       api(`/api/chats/${state.chatId}`).then(({ chat }) => {
-        $('#chat-title').textContent = chat.title || 'Новый чат';
+        $('#chat-title').textContent = chat.title || '新会话';
       }).catch(() => {});
     }
   }
@@ -337,7 +337,7 @@ async function newChat({ text } = {}) {
   });
   state.chatId = chat.id;
   $('#messages').innerHTML = '';
-  $('#chat-title').textContent = chat.title || 'Новый чат';
+  $('#chat-title').textContent = chat.title || '新会话';
   refreshSettingsChips();
   refreshList();
   if (text) await sendMessage(text);
@@ -349,7 +349,7 @@ function renderList(chats) {
   list.innerHTML = '';
   list.classList.toggle('empty', !chats.length);
   if (!chats.length) {
-    list.innerHTML = '<div class="empty-hint"><svg><use href="#i-doc"/></svg><span>Пока пусто</span></div>';
+    list.innerHTML = '<div class="empty-hint"><svg><use href="#i-doc"/></svg><span>暂无会话</span></div>';
     return;
   }
   for (const c of chats) {
@@ -357,21 +357,21 @@ function renderList(chats) {
     item.className = 'chat-item' + (c.id === state.chatId ? ' active' : '');
     const t = document.createElement('span');
     t.className = 't';
-    t.textContent = c.title || 'Новый чат';
+    t.textContent = c.title || '新会话';
     t.onclick = () => openChat(c.id);
     const del = document.createElement('button');
     del.className = 'del';
-    del.title = 'Удалить';
+    del.title = '删除';
     del.innerHTML = '<svg><use href="#i-trash"/></svg>';
     del.onclick = async (e) => {
       e.stopPropagation();
-      if (!confirm('Удалить чат?')) return;
+      if (!confirm('删除这个会话？')) return;
       try {
         await api(`/api/chats/${c.id}`, { method: 'DELETE' });
         if (state.chatId === c.id) {
           state.chatId = null;
           state.activeAssistant = null;
-          $('#chat-title').textContent = 'Новый чат';
+          $('#chat-title').textContent = '新会话';
           showWelcome();
         }
         refreshList();
@@ -394,7 +394,7 @@ async function openChat(id) {
   state.chatId = id;
   state.activeAssistant = null;
   $('#messages').innerHTML = '';
-  $('#chat-title').textContent = chat.title || 'Новый чат';
+  $('#chat-title').textContent = chat.title || '新会话';
   $('#model-select').value = chat.model;
   $('#history-toggle').checked = false;
   for (const m of chat.messages || []) {
@@ -409,7 +409,7 @@ async function openChat(id) {
       for (const tc of m.tool_calls || []) {
         const card = document.createElement('div');
         card.className = 'tool-card';
-        card.innerHTML = `<div class="tool-head">${toolIcon(tc.function.name)}<span class="name">${escapeHtml(tc.function.name)}</span><span class="state">выполнено</span></div><div class="tool-payload">${escapeHtml(tc.function.arguments || '{}')}</div>`;
+        card.innerHTML = `<div class="tool-head">${toolIcon(tc.function.name)}<span class="name">${escapeHtml(tc.function.name)}</span><span class="state">已完成</span></div><div class="tool-payload">${escapeHtml(tc.function.arguments || '{}')}</div>`;
         a.bubble.appendChild(card);
       }
     }
@@ -485,7 +485,7 @@ function init() {
   });
   $('#btn-clear').addEventListener('click', async () => {
     if (!state.chatId) return;
-    if (!confirm('Очистить историю сообщений?')) return;
+    if (!confirm('清空当前会话的消息记录？')) return;
     try {
       await api(`/api/chats/${state.chatId}/clear`, { method: 'POST' });
       state.activeAssistant = null;

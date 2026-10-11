@@ -79,7 +79,7 @@ class ToolMemo {
   }
 
   /**
-   * Синхронизация всей истории сообщений сессии (User / Assistant / Tool).
+   * 同步整段会话的消息历史（User / Assistant / Tool）。
    */
   syncMessages(sessionKey, rawMessages) {
     if (!sessionKey || !Array.isArray(rawMessages)) return;

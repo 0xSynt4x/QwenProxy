@@ -27,6 +27,9 @@ function normalize(data, id) {
     unavailableUntil: Number(data.unavailableUntil || 0),
     lastError: data.lastError || '',
     lastUsedAt: Number(data.lastUsedAt || 0),
+    // 长命凭据（30 天）。老账号文件可能没有，由 token-manager 启动时从 cookie 补。
+    refreshToken: data.refreshToken || '',
+    lastRefreshAt: Number(data.lastRefreshAt || 0),
   };
 }
 
@@ -71,6 +74,22 @@ function load() {
   return current();
 }
 
+/**
+ * 写入新 token：同时更新顶层 `token` 和 cookie 数组里 name === 'token' 的那条，
+ * 两处必须一致 —— 上游鉴权只认 token，但 SPA 一致性也不能破。
+ */
+function setToken(account, token) {
+  if (!account || !token) return account;
+  account.token = token;
+  if (Array.isArray(account.cookie)) {
+    const hit = account.cookie.find((c) => c && c.name === 'token');
+    if (hit) hit.value = token;
+    else account.cookie.push({ name: 'token', value: token, domain: '.qwen.ai', path: '/' });
+  }
+  persist(account);
+  return account;
+}
+
 function reset(account) {
   const target = typeof account === 'string' ? get(account) : account || current();
   if (!target) return null;
@@ -83,8 +102,8 @@ function reset(account) {
 
 function save(data, requestedId) {
   let explicitId = requestedId || (data && data.id);
-  // Если пришёл дефолтный служебный ID (playwright-capture / manual) без явного requestedId —
-  // не перезаписывать существующих пользователей, а создать новый уникальный account-N
+  // 如果传入的是默认的服务用 ID（playwright-capture / manual）且没有显式 requestedId ——
+  // 不要覆盖已有用户，而是新建一个唯一的 account-N
   if (!requestedId && (explicitId === 'playwright-capture' || explicitId === 'manual')) {
     explicitId = null;
   }
@@ -111,6 +130,7 @@ function list() {
     unavailableUntil: account.unavailableUntil || 0,
     lastError: account.lastError || '',
     lastUsedAt: account.lastUsedAt || 0,
+    hasRefreshToken: Boolean(account.refreshToken),
     active: account.id === activeId,
     available: isAvailable(account),
   }));
@@ -210,4 +230,4 @@ function remove(id) {
   return true;
 }
 
-module.exports = { save, load, list, get, current, candidates, select, reset, remove, markSuccess, markFailure, isAccount, isAvailable, buildCookieHeader };
+module.exports = { save, load, list, get, current, candidates, select, reset, remove, markSuccess, markFailure, isAccount, isAvailable, buildCookieHeader, setToken, persistAccount: persist };

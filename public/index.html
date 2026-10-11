@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ru">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Qwen Chat</title>
+    <title>Qwen 代理</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -23,29 +23,29 @@
       <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/></symbol>
     </svg>
 
-    <input type="checkbox" id="history-toggle" class="visually-hidden" aria-label="Показать историю чатов" />
+    <input type="checkbox" id="history-toggle" class="visually-hidden" aria-label="显示会话历史" />
     <div class="app">
       <!-- Sidebar -->
       <aside class="sidebar">
         <div class="brand">
           <span class="brand-badge"><svg><use href="#i-bolt"/></svg></span>
-          <span class="brand-name">Qwen Chat</span>
+          <span class="brand-name">Qwen 代理</span>
         </div>
 
         <button id="new-chat" class="btn-new" type="button">
           <svg><use href="#i-plus"/></svg>
-          <span>Новый чат</span>
+          <span>新会话</span>
         </button>
 
         <div class="history-scroll">
           <div id="chat-list" class="chat-list empty">
-            <div class="empty-hint"><svg><use href="#i-doc"/></svg><span>Пока пусто</span></div>
+            <div class="empty-hint"><svg><use href="#i-doc"/></svg><span>暂无会话</span></div>
           </div>
         </div>
 
         <div class="sidebar-foot">
           <div id="model-block" class="row">
-            <span class="row-label">Модель</span>
+            <span class="row-label">模型</span>
             <select id="model-select" class="select"></select>
           </div>
         </div>
@@ -54,50 +54,50 @@
       <!-- Main -->
       <main class="main">
         <div class="topbar">
-          <label for="history-toggle" class="icon-btn sidebar-toggle" title="История">
+          <label for="history-toggle" class="icon-btn sidebar-toggle" title="会话历史">
             <svg><use href="#i-doc"/></svg>
           </label>
-          <h1 id="chat-title" class="chat-title">Новый чат</h1>
+          <h1 id="chat-title" class="chat-title">新会话</h1>
           <div class="topbar-tools">
-            <button id="btn-clear" class="icon-btn" title="Очистить чат"><svg><use href="#i-trash"/></svg></button>
+            <button id="btn-clear" class="icon-btn" title="清空会话"><svg><use href="#i-trash"/></svg></button>
           </div>
         </div>
 
         <div id="messages" class="messages">
           <div class="welcome">
             <div class="welcome-icon"><svg><use href="#i-bolt"/></svg></div>
-            <p class="welcome-title">Чат с Qwen</p>
-            <p class="welcome-sub">Включи режимы слева, чтобы дать модели инструменты.</p>
+            <p class="welcome-title">Qwen 代理</p>
+            <p class="welcome-sub">在下面打开需要的模式，模型就能用对应工具。</p>
           </div>
         </div>
 
         <div class="composer">
           <div id="toolbar" class="toolbar">
-          <button class="chip" type="button" data-setting="thinking" aria-pressed="false" title="Режим размышления">
+          <button class="chip" type="button" data-setting="thinking" aria-pressed="false" title="思考模式（显示推理过程）">
               <svg><use href="#i-brain"/></svg>
-              <span>Thinking</span>
+              <span>思考</span>
               <span class="chip-check"><svg><use href="#i-check"/></svg></span>
           </button>
-            <button class="chip" type="button" data-setting="webSearch" aria-pressed="false" title="Поиск в интернете">
+            <button class="chip" type="button" data-setting="webSearch" aria-pressed="false" title="联网搜索">
               <svg><use href="#i-search"/></svg>
-              <span>Search</span>
+              <span>搜索</span>
               <span class="chip-check"><svg><use href="#i-check"/></svg></span>
           </button>
-            <button class="chip" type="button" data-setting="terminal" aria-pressed="false" title="Доступ к терминалу">
+            <button class="chip" type="button" data-setting="terminal" aria-pressed="false" title="允许模型执行终端命令">
               <svg><use href="#i-term"/></svg>
-              <span>Терминал</span>
+              <span>终端</span>
               <span class="chip-check"><svg><use href="#i-check"/></svg></span>
           </button>
-            <button class="chip" type="button" data-setting="files" aria-pressed="false" title="Доступ к файлам">
+            <button class="chip" type="button" data-setting="files" aria-pressed="false" title="允许模型读写文件">
               <svg><use href="#i-folder"/></svg>
-              <span>Файлы</span>
+              <span>文件</span>
               <span class="chip-check"><svg><use href="#i-check"/></svg></span>
           </button>
           </div>
 
           <form id="composer-form">
-            <textarea id="input" rows="1" placeholder="Напиши сообщение… (Enter — отправить, Shift+Enter — новая строка)" autocomplete="off"></textarea>
-            <button id="send" class="send-btn" type="submit" title="Отправить">
+            <textarea id="input" rows="1" placeholder="输入消息…（Enter 发送，Shift+Enter 换行）" autocomplete="off"></textarea>
+            <button id="send" class="send-btn" type="submit" title="发送">
               <svg><use href="#i-send"/></svg>
             </button>
           </form>

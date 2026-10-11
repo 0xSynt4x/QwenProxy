@@ -3,18 +3,24 @@
 const axios = require('axios');
 const config = require('./config');
 const accountStore = require('./account-store');
-const ssxmodManager = require('./ssxmod-manager');
-const { generateUUID, getTimezoneHeader, logger } = require('./util');
+const tokenManager = require('./token-manager');
+const { buildHeaders } = require('./qwen-headers');
+const { logger } = require('./util');
 
 /**
- * Qwen Chat v2 HTTP-клиент с полным набором анти-бот заголовков
- * и генерацией SSXMOD cookie на каждый запрос.
+ * Qwen Chat v2 HTTP 客户端，带完整的反爬请求头
+ * 以及每个请求都重新生成的 SSXMOD cookie。
  *
- * Поток:
+ * 流程：
  *   1. POST /api/v2/chats/new          -> chat_id
  *   2. POST /api/v2/chat/completions?chat_id=...   -> SSE
  *
- * Upstream стримит всегда (stream:false upstream не поддерживает).
+ * 上游始终是流式的（不支持 stream:false）。
+ *
+ * 鉴权铁律（2026-10 实测）：
+ *   - 只认 `token`，cookie 完全不参与鉴权；
+ *   - access token 只有 15 分钟寿命，所以每次请求前先经 token-manager 确保新鲜；
+ *   - 收到 401/403 时先用 refresh_token 换一次新 token 再重试，仍失败才换账号。
  */
 
 const isWafResponse = (status, contentType, bodyText) => {
@@ -26,39 +32,22 @@ const isWafResponse = (status, contentType, bodyText) => {
   return false;
 };
 
-function buildHeaders(refererPath, account) {
-  const cookie = accountStore.buildCookieHeader(
-    account,
-    ssxmodManager.getSsxmodItna(),
-    ssxmodManager.getSsxmodItna2()
-  );
-  return {
-    'sec-ch-ua-platform': '"Windows"',
-    referer: `${config.BASE_URL}${refererPath}`,
-    'accept-language': 'zh-CN,zh;q=0.9',
-    'sec-ch-ua': '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
-    'sec-ch-ua-mobile': '?0',
-    'user-agent': config.USER_AGENT,
-    'content-type': 'application/json',
-    accept: 'application/json',
-    'accept-encoding': 'gzip, deflate, br, zstd',
-    source: 'web',
-    version: config.QWEN_WEB_VERSION,
-    timezone: getTimezoneHeader(),
-    'x-request-id': generateUUID(),
-    connection: 'keep-alive',
-    cookie,
-    host: config.BASE_URL.replace('https://', ''),
-    origin: config.BASE_URL,
-    'sec-fetch-dest': 'empty',
-    'sec-fetch-mode': 'cors',
-    'sec-fetch-site': 'same-origin',
-    'x-accel-buffering': 'no',
-  };
+/** 401/403 时换一次新 token；成功返回新 token，失败返回 null。 */
+async function tryRefreshOnAuthError(account) {
+  try {
+    const token = await tokenManager.refreshAccountToken(account);
+    if (!token) return null;
+    accountStore.setToken(account, token);
+    logger.info(`Recovered from auth error by refreshing token for ${account.id}`, 'QWEN');
+    return token;
+  } catch (err) {
+    logger.warn(`Auth-error refresh failed for ${account.id}: ${err.message}`, 'QWEN');
+    return null;
+  }
 }
 
 /**
- * Получить chat_id для новой беседы.
+ * 为新会话获取 chat_id。
  */
 async function generateChatID(model, chatType = 't2t', targetAccount = null) {
   let candidates = accountStore.candidates();
@@ -67,6 +56,7 @@ async function generateChatID(model, chatType = 't2t', targetAccount = null) {
   }
   if (!candidates.length) return null;
   for (const account of candidates) try {
+    await tokenManager.ensureFreshToken(account);
     const res = await axios.post(
       `${config.BASE_URL}/api/v2/chats/new`,
       {
@@ -77,9 +67,26 @@ async function generateChatID(model, chatType = 't2t', targetAccount = null) {
         chat_type: chatType,
         chat_mode: 'normal',
       },
-      { headers: buildHeaders('/c/new-chat', account), timeout: 30000 }
+      { headers: buildHeaders('/c/new-chat', account), timeout: 30000, validateStatus: () => true }
     );
-    if (isWafResponse(res.status, res.headers['content-type'], JSON.stringify(res.data)) || res.status === 401 || res.status === 403) {
+    if (res.status === 401 || res.status === 403) {
+      const refreshed = await tryRefreshOnAuthError(account);
+      if (refreshed) {
+        const retry = await axios.post(
+          `${config.BASE_URL}/api/v2/chats/new`,
+          { chatId: '', models: [model], project_id: '', timestamp: Date.now(), chat_type: chatType, chat_mode: 'normal' },
+          { headers: buildHeaders('/c/new-chat', account), timeout: 30000, validateStatus: () => true }
+        );
+        const retryId = retry.data && retry.data.data && retry.data.data.id;
+        if (retryId) {
+          accountStore.markSuccess(account);
+          return retryId;
+        }
+      }
+      accountStore.markFailure(account, 'Unauthorized on /chats/new (token refresh did not help)', true);
+      continue;
+    }
+    if (isWafResponse(res.status, res.headers['content-type'], JSON.stringify(res.data))) {
       accountStore.markFailure(account, 'WAF challenge on /chats/new', true);
       continue;
     }
@@ -95,7 +102,7 @@ async function generateChatID(model, chatType = 't2t', targetAccount = null) {
 }
 
 /**
- * Отправить chat request. `payload` уже включает chat_id/chatId.
+ * 发送 chat 请求。`payload` 中已包含 chat_id/chatId。
  */
 async function sendChatRequest(payload, preferredAccount = null) {
   let candidates = accountStore.candidates();
@@ -111,6 +118,8 @@ async function sendChatRequest(payload, preferredAccount = null) {
   const originalChatId = payload.chat_id || payload.chatId;
 
   for (const account of candidates) try {
+    await tokenManager.ensureFreshToken(account);
+
     let accountChatId = originalChatId;
     if ((account.id !== candidates[0].id) || !accountChatId) {
       accountChatId = await generateChatID(model, chatType, account);
@@ -127,17 +136,50 @@ async function sendChatRequest(payload, preferredAccount = null) {
     };
 
     const url = `${config.BASE_URL}/api/v2/chat/completions?chat_id=${accountChatId}`;
+    // 用 validateStatus 自己判状态码：401 时才有机会先续期再重试一次
     const response = await axios.post(url, accountPayload, {
       headers: buildHeaders(`/c/${accountChatId}`, account),
       responseType: 'stream',
       timeout: 10 * 60 * 1000,
+      validateStatus: () => true,
     });
 
     if (response.status === 200) {
       accountStore.markSuccess(account);
       return { status: true, response: response.data, account, chatId: accountChatId };
     }
+
+    if (response.status === 401 || response.status === 403) {
+      let bodyText = '';
+      try { bodyText = await readStream(response.data); } catch (_) { /* ignore */ }
+      const refreshed = await tryRefreshOnAuthError(account);
+      if (refreshed) {
+        const retry = await axios.post(url, accountPayload, {
+          headers: buildHeaders(`/c/${accountChatId}`, account),
+          responseType: 'stream',
+          timeout: 10 * 60 * 1000,
+          validateStatus: () => true,
+        });
+        if (retry.status === 200) {
+          accountStore.markSuccess(account);
+          return { status: true, response: retry.data, account, chatId: accountChatId };
+        }
+      }
+      accountStore.markFailure(account, 'Qwen session expired (token refresh did not help)', true);
+      logger.warn(`Auth error for ${account.id} (status ${response.status})${bodyText ? `: ${bodyText.slice(0, 200)}` : ''}, failing over`, 'QWEN');
+      continue;
+    }
+
+    let bodyText = '';
+    try { bodyText = await readStream(response.data); } catch (_) { /* ignore */ }
+    const ct = response.headers['content-type'] || '';
+    if (isWafResponse(response.status, ct, bodyText)) {
+      accountStore.markFailure(account, 'Qwen blocked by WAF', true);
+      logger.warn(`WAF block for ${account.id} (status ${response.status}), failing over to next account`, 'QWEN');
+      continue;
+    }
     accountStore.markFailure(account, `Unexpected status ${response.status}`);
+    logger.error(`chat completion failed for ${account.id}: status ${response.status}, failing over...`, 'QWEN');
     continue;
   } catch (err) {
     const status = err.response ? err.response.status : null;

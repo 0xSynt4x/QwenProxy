@@ -3,14 +3,14 @@
 const crypto = require('crypto');
 
 /**
- * Общие утилиты: UUID, timezone-заголовок, sha256, логирование.
+ * 通用工具：UUID、timezone 请求头、sha256、日志。
  */
 
 const generateUUID = () => crypto.randomUUID();
 
 /**
- * Браузерный ASCII timezone-заголовок (без не-ASCII, иначе HTTP-хедер ломается).
- * Пример: "Thu Aug 07 2026 10:00:00 GMT+0000 (Coordinated Universal Time)"
+ * 浏览器风格的 ASCII timezone 请求头（不含非 ASCII 字符，否则 HTTP 头会损坏）。
+ * 示例："Thu Aug 07 2026 10:00:00 GMT+0000 (Coordinated Universal Time)"
  */
 const getTimezoneHeader = () =>
   new Date()
@@ -23,7 +23,7 @@ const sha256Hex = (text) => crypto.createHash('sha256').update(String(text), 'ut
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ---------- Логгер ----------
+// ---------- 日志 ----------
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const LEVEL = LEVELS[process.env.LOG_LEVEL || 'info'];
 

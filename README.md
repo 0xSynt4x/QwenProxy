@@ -1,268 +1,358 @@
-# Qwen Free API
+# QwenProxy
 
-Локальный OpenAI-совместимый прокси для Qwen Chat с веб-интерфейсом, SSE-стримингом и инструментами агента. Сервер работает с внутренним web API Qwen Chat и предназначен для локального использования.
+把 **chat.qwen.ai 网页端**的内部 web API 反代成 **OpenAI 兼容端点**的本地代理，自带 token 自动续期。
 
-Проект предназначен для локального использования. Он обращается к внутреннему web API Qwen Chat, поэтому upstream API и формат ответов могут изменяться — в таком случае потребуется обновление прокси.
+用途：让 OpenCode / Cline / 任何 OpenAI 兼容客户端，不花钱用上 `qwen3.8-max`（1M 上下文）。
 
-## Возможности
+> ⚠️ 这是**非官方**的浏览器端逆向工具，仅供个人本地使用。Qwen / 阿里会改内部 API、改模型列表、改响应格式 —— 那时需要更新本代理。使用需遵守 Qwen 服务条款。
 
-- OpenAI-compatible API: `GET /v1/models` и `POST /v1/chat/completions`.
-- Веб-чат с историей, стримингом ответов и markdown-рендерингом.
-- Glassmorphism UI с адаптивной мобильной навигацией.
-- Режимы Thinking, Search, Терминал и Файлы.
-- Инструменты агента: `bash`, чтение/запись файлов и веб-поиск.
-- Автоматическая генерация SSXMOD fingerprint cookies для запросов к Qwen.
-- Поддержка Playwright для входа в аккаунт через браузер.
-- Кэширование списка доступных моделей.
+---
 
-## Требования
+## 能做什么
 
-- Node.js `>= 18`.
-- Аккаунт Qwen Chat.
-- Chromium/Playwright только для автоматического захвата токена и cookies (опционально).
+- **OpenAI 兼容**：`GET /v1/models`、`POST /v1/chat/completions`（流式 / 非流式都支持）。
+- **网页聊天界面**：带历史、流式输出、Markdown 渲染。
+- **Agent 工具**：`bash`、读写文件、联网搜索（走 tool_call 协议）。
+- **多账号池 + 自动路由**：某个账号挂了自动换下一个，失败按指数退避。
+- **token 自动续期**：不用每天重新登录（见下方「token 机制」）。
+- **纯 JS 生成 SSXMOD 指纹 cookie**：不需要真浏览器就能过 WAF 指纹校验。
 
-## Установка
+---
+
+## 环境要求
+
+- **Node.js >= 18**（实测 v24.11.1 正常）。
+- 一个 Qwen Chat 账号（chat.qwen.ai，免费注册）。
+- 想用自动抓登录态的话需要 Playwright + 本机 Chrome。
+
+### Windows 用户注意
+
+本项目原版是给 Linux 写的（文档和安装脚本里有 systemd 那套）。**Windows 上不要用 `npm run install:setup` 的 systemd 部分**，直接：
+
+```powershell
+npm install
+copy .env.example .env
+node scripts/capture-login.js     # 抓登录态
+node server.js                    # 起服务
+```
+
+要开机自启，用「任务计划程序」或 `nssm`，别指望 systemd。
+
+---
+
+## 安装
 
 ```bash
-git clone <URL-репозитория>
-cd qwen-free-api
+git clone https://github.com/0xSynt4x/QwenProxy.git
+cd QwenProxy
 npm install
 cp .env.example .env
 ```
 
-Для автоматического входа установите браузер Playwright:
+`npm install` 时如果不想下浏览器内核（本机已有 Chrome 的话）：
 
 ```bash
-npm install playwright
-npx playwright install chromium
+PUPPETEER_SKIP_DOWNLOAD=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install
 ```
 
-## Первый запуск
+---
 
-1. Выполните вход в Qwen Chat:
+## 登录（抓账号）
 
-   ```bash
-   npm run login
-   ```
-
-2. Запустите сервер:
-
-   ```bash
-   npm start
-   ```
-
-3. Откройте веб-чат: `http://localhost:3265/`.
-
-После входа токен и cookies сохраняются локально в `config/accounts/<id>.json`. Эти файлы игнорируются Git и не должны публиковаться в публичных репозиториях.
-
-## Несколько аккаунтов и autorouting
-
-Проект поддерживает пул аккаунтов Qwen. Каждый аккаунт хранится отдельно, а сервер автоматически пробует доступные аккаунты при ошибках (autorouting).
-
-Откройте CLI-дашборд:
+**推荐用 `capture-login.js`**，不要用原版 `login.js`：
 
 ```bash
-npm run accounts
+node scripts/capture-login.js
+# 或指定账号 id
+node scripts/capture-login.js --account main
 ```
 
-В меню доступны:
+它会开一个真 Chrome 窗口，你登录 Qwen，脚本自动抓 token + cookie 落盘。窗口里登录完不用管，脚本每 2.5 秒轮询一次，抓到就自己关。
 
-- `a` — добавить новый аккаунт;
-- `r` — перелогинить выбранный аккаунт;
-- `s` — выбрать активный аккаунт вручную;
-- `d` — удалить аккаунт;
-- `q` — выйти.
+> 🔴 **Windows 上必须让脚本借用本机 Chrome**：`.env` 里设 `PLAYWRIGHT_CHANNEL=chrome`。项目默认不带 Chromium 内核，不设这个会报找不到浏览器。
 
-Для добавления аккаунта можно также использовать login напрямую:
+### 为什么不用原版 `login.js`
 
-```bash
-npm run login -- --account personal-2
+原版在页面上下文里用 `page.waitForFunction` 读 localStorage。Qwen 现在会跳转到受限文档（WAF / OAuth 中转页），一读就抛：
+
+```
+SecurityError: Failed to read the 'localStorage' property from 'Window': Access is denied for this document.
 ```
 
-Аккаунт помечается как недоступный с exponential backoff после ошибки. WAF и ошибки авторизации могут блокировать аккаунт на более длительное время.
+`capture-login.js` 改成「Node 侧轮询 + 每次 evaluate 都 try/catch + persistent profile」，绕开了这个坑。
 
-### Ручной вход без Playwright
-
-Если браузер Playwright недоступен, можно вставить JWT вручную:
+### 手动填 token（不想开浏览器）
 
 ```bash
 npm run login -- --manual
 ```
 
-Скрипт попросит токен из DevTools браузера: `Local Storage` → `token`.
+脚本会要你从浏览器 DevTools 的 `Application` → `Local Storage` → `chat.qwen.ai` → `token` 里复制 JWT。
 
-## Конфигурация
+登录态存在 `config/accounts/<id>.json`，已被 `.gitignore` 排除，**别提交上去**。
 
-Основные параметры находятся в `.env`:
+---
 
-| Переменная | По умолчанию | Назначение |
-|---|---:|---|
-| `PORT` | `3265` | Порт HTTP-сервера |
-| `QWEN_WORKSPACE` | `~/qwen-workspace` | Sandbox для терминала и файловых инструментов |
-| `QWEN_WEB_VERSION` | `0.2.83` | Версия web-клиента Qwen для upstream-запросов |
-| `DEFAULT_MODEL` | `qwen3.8-max` | Модель по умолчанию |
-| `MAX_PAYLOAD_BYTES` | `16777216` | Максимальный размер JSON-тела шлюза |
-| `STREAM_IDLE_TIMEOUT_MS` | `180000` | Таймаут SSE без новых данных, мс |
-| `LOG_LEVEL` | `info` | Уровень логирования: `debug`, `info`, `warn`, `error` |
+## 启动
 
-Если Qwen начинает возвращать WAF-ошибки, найдите актуальный `version` в DevTools → Network → запрос к `chat.qwen.ai` и обновите переменную `QWEN_WEB_VERSION` в `.env`.
+```bash
+npm start
+```
 
-## Использование OpenAI-compatible API
+- 网页聊天：http://localhost:3265/
+- OpenAI API：http://localhost:3265/v1
+- 健康检查：http://localhost:3265/health
 
-Сервер предоставляет OpenAI-compatible HTTP API. Вы можете делать обычные HTTP-запросы к прокси, а агентные возможности (`tool_call`) доступны через совместимый интерфейс.
+---
 
-- Base URL: `http://localhost:3265/v1`
-- API key: любое значение, например `local`
+## token 机制（本项目的核心改动）
 
-Пример запроса:
+原版**一行续期代码都没有**，而 Qwen 的 access token 只有 **15 分钟**寿命 —— 意味着原版每 15 分钟就必然 500。本项目补上了自动续期。
+
+**两种 token 的寿命：**
+
+- **access token** —— `exp - iat = 900 秒 = 15 分钟`。用来发对话。
+- **refresh_token** —— 存在 cookie 里，**30 天**。用来换 access token。
+
+**续期怎么走：**
+
+- 换发接口：`GET https://chat.qwen.ai/api/v1/auths/`，带 `Authorization: Bearer <refresh_token>`。
+- 响应体里回新 token，同时 `set-cookie: token=<同一个>`。
+- 🔴 **`refresh_token` 本身可以直接当 Bearer 用**，能直接发对话，不换发也行。所以最省事的做法是直接把账号 token 换成 refresh_token 值，一次管 30 天。
+
+**代码里的行为：**
+
+- `src/token-manager.js` 在每次发请求前检查 token 剩余寿命，**不足 1 天才去续**（`isTokenExpiring`），同一账号 60 秒内不重复换。
+- 续期失败返回原 token，不会死循环。
+- `src/qwen-client.js` 遇到 401/403 会先换 token 再重试一次，仍失败才把账号标记为不可用。
+- 启动时自动从 cookie 数组里把 `refresh_token` 补进 `account.refreshToken` 字段（`backfillRefreshToken`），不用重新登录。
+
+**鉴权结论（实测）：** 上游 100% 只看 `token`，**cookie 不参与鉴权**。但完整浏览器头（`sec-ch-ua` / `sec-fetch-*` / `origin` / `host`）必须带全，少一个就被 WAF 拦成 `FAIL_SYS_USER_VALIDATE`。
+
+---
+
+## 配置项（`.env`）
+
+- **`PORT`** —— 默认 `3265`。HTTP 服务端口。
+- **`QWEN_WORKSPACE`** —— 默认 `~/qwen-workspace`。agent 的 bash / 文件工具的沙箱目录。
+- **`QWEN_WEB_VERSION`** —— 默认 `0.2.83`。上游 SPA 版本号，作为请求头发出去。
+- **`DEFAULT_MODEL`** —— 默认 `qwen3.8-max`。客户端没传 model 时用这个。
+- **`MAX_PAYLOAD_BYTES`** —— 默认 `16777216`。入口 JSON 体大小上限（技术限制，不是模型 token 限制）。
+- **`STREAM_IDLE_TIMEOUT_MS`** —— 默认 `180000`。SSE 多久没新数据就判超时。
+- **`LOG_LEVEL`** —— `debug` / `info` / `warn` / `error`。
+- **`PLAYWRIGHT_CHANNEL`** —— 设成 `chrome` 就用本机 Chrome，不用下 Chromium。
+
+### 🔴 `QWEN_WEB_VERSION` 的铁律
+
+**别改成线上真实版本号。** 实测（2026-10-12）：
+
+- 线上前端实际是 **`0.3.16`**（`assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.3.16/js/main.js`）。
+- 但发请求时头里带 `version: 0.3.16` 会被判 `Unauthorized`。
+- 带 **`0.2.83`** 才放行。
+
+所以 `.env` 里保持 `0.2.83`。真遇到 WAF 报错时，去 DevTools → Network → 任意 `chat.qwen.ai` 请求 → Request Headers → `version` 看当前值，再试着换。
+
+---
+
+## 模型
+
+代理对外暴露 **7 个**模型（实测账号可见清单）：
+
+- `qwen3.8-max` —— 1M 上下文 / 131072 输出。默认模型。
+- `qwen3.7-max`
+- `qwen3.7-plus`
+- `qwen3.6-plus`
+- `qwen3.5-plus`
+- `qwen3.8-omni-flash`
+- `qwen3.5-omni-plus`
+
+用 `npm run models` 拉线上清单刷新缓存（会连每个模型的 `max_context_length` 一起存进 `config/models-cache.json`，`/v1/models` 就报真实限制）。
+
+> 注：原版硬编码的 `qwen3-coder-plus` 在当前账号下**不可见**，已从清单移除。
+
+---
+
+## 用 OpenAI 兼容 API
+
+Base URL `http://localhost:3265/v1`，API key 随便填（比如 `local`）。
 
 ```bash
 curl http://localhost:3265/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer local' \
   -d '{
-    "model": "qwen3.7-max",
-    "messages": [{"role": "user", "content": "Привет!"}],
+    "model": "qwen3.8-max",
+    "messages": [{"role": "user", "content": "你好"}],
     "stream": true
   }'
 ```
 
-Для OpenCode используйте провайдер `@ai-sdk/openai-compatible`:
+### OpenCode 配置
 
 ```jsonc
 {
-  "qwen": {
-    "npm": "@ai-sdk/openai-compatible",
-    "name": "Qwen Free",
-    "options": {
-      "baseURL": "http://localhost:3265/v1",
-      "apiKey": "local"
-    },
-    "models": {
-      "qwen3.8-max": {
-        "name": "Qwen 3.8 Max",
-        "reasoning": true,
-        "tool_call": true,
-        "limit": {"context": 1000000, "output": 131072}
+  "provider": {
+    "qwen": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "QwenProxy",
+      "options": {
+        "baseURL": "http://localhost:3265/v1",
+        "apiKey": "local"
+      },
+      "models": {
+        "qwen3.8-max": {
+          "name": "Qwen 3.8 Max",
+          "reasoning": true,
+          "tool_call": true,
+          "limit": { "context": 1000000, "output": 131072 }
+        }
       }
     }
   }
 }
 ```
 
-Запуск:
-
 ```bash
-opencode run --model qwen/qwen3.8-max "Объясни этот код"
+opencode run --model qwen/qwen3.8-max "解释这段代码"
 ```
 
-## Веб-чат и инструменты
+---
 
-Откройте `http://localhost:3265/`. В нижней панели доступны режимы:
+## API 端点
 
-- **Thinking** — отображение reasoning-фазы ответа.
-- **Search** — поиск в интернете и инструмент `web_search`.
-- **Терминал** — выполнение команд в настроенном workspace.
-- **Файлы** — чтение и изменение файлов внутри workspace.
+- `GET /` —— 网页聊天界面
+- `GET /health` —— 账号与 SSXMOD 状态
+- `GET /healthz` —— 服务诊断
+- `GET /v1/models` —— OpenAI 模型列表
+- `POST /v1/chat/completions` —— OpenAI 兼容对话
+- `GET /api/models` —— 网页端用的模型列表
+- `GET /api/chats` —— 会话列表
+- `POST /api/chats` —— 新建会话
+- `GET/PATCH/DELETE /api/chats/:id` —— 查 / 改 / 删会话
+- `POST /api/chats/:id/messages` —— 发消息（SSE）
+- `POST /api/chats/:id/clear` —— 清空会话历史
+- `GET/POST /api/workspace` —— 读 / 改沙箱目录
 
-История чатов хранится в `config/chats/` и исключена из Git. Workspace можно задать через `QWEN_WORKSPACE` или API `POST /api/workspace`.
+---
 
-### Лимиты моделей
-
-Шлюз получает доступные модели из `chat.qwen.ai` и публикует реальные лимиты контекста в `GET /v1/models` в полях `context_window` и других полях, отражающих ограничения моделей.
-
-Контекст модели и размер HTTP-запроса являются разными ограничениями. Входное JSON-тело шлюза по умолчанию ограничено переменной `MAX_PAYLOAD_BYTES`.
-
-## API endpoints
-
-| Метод | Endpoint | Назначение |
-|---|---|---|
-| `GET` | `/` | Веб-интерфейс |
-| `GET` | `/health` | Состояние аккаунта и SSXMOD |
-| `GET` | `/healthz` | Диагностика сервиса |
-| `GET` | `/v1/models` | OpenAI-список моделей |
-| `POST` | `/v1/chat/completions` | OpenAI-compatible чат |
-| `GET` | `/api/models` | Модели для веб-интерфейса |
-| `GET` | `/api/chats` | Список чатов |
-| `POST` | `/api/chats` | Создать чат |
-| `GET/PATCH/DELETE` | `/api/chats/:id` | Получить, изменить или удалить чат |
-| `POST` | `/api/chats/:id/messages` | Отправить сообщение через SSE |
-| `POST` | `/api/chats/:id/clear` | Очистить историю чата |
-| `GET/POST` | `/api/workspace` | Получить или изменить workspace |
-
-## Команды
+## 命令
 
 ```bash
-npm start                 # запустить сервер
-npm run login             # войти в Qwen Chat
-npm run login -- --manual # ручной ввод JWT
-npm run models            # обновить список моделей
-npm run install:setup     # настроить systemd и интеграции
-npm test                  # запустить тесты cookies и SSE
-npm run daemon            # включить systemd user service
-npm run daemon:stop       # остановить systemd user service
+npm start                     # 起服务
+node scripts/capture-login.js # 抓登录态（推荐）
+npm run login                 # 原版登录（易踩 localStorage 坑）
+npm run login -- --manual     # 手动贴 JWT
+npm run accounts              # 多账号管理面板
+npm run models                # 刷新模型清单
+npm test                      # 全套离线测试
 ```
 
-## Тестирование
+---
 
-Перед отправкой изменений выполните:
+## 测试
 
 ```bash
-node --check public/app.js
-node --check server.js
 npm test
 ```
 
-Тесты не требуют запроса к Qwen: `test-cookies.js` проверяет генерацию fingerprint cookies, а `offline-sse-test.js` проверяет преобразование событий SSE в оффлайн-режиме.
+跑四组，全离线、不打网络：
 
-## Структура проекта
+- `scripts/test-cookies.js` —— SSXMOD 指纹 cookie 生成。
+- `scripts/test-token.js` —— token 续期逻辑（JWT 解码 / 过期判定 / 换发解析 / 双写一致性）。
+- `scripts/offline-sse-test.js` —— Qwen SSE → OpenAI 格式转换，含思维链换行、model 字段透传的回归用例。
+- `scripts/offline-tool-loop-test.js` —— agent 工具循环端到端。
+
+改代码前先跑一遍。
+
+---
+
+## 排障
+
+**`401` 或 `session expired`**
+
+自动路由会暂时跳过这个账号。`npm run accounts` 里按 `r` 重新登录，或跑 `capture-login.js`。
+
+**`504` / 返回 HTML 而不是 JSON / WAF 滑块**
+
+上游版本号变了或触发了风控。试着调 `QWEN_WEB_VERSION`，在浏览器里过掉滑块，再重新登录。
+
+**`WAF_CAPTCHA_CHALLENGE`**
+
+阿里云风控要验证码了。**别高频打请求** —— 短时间连打很容易触发，之后所有请求都会 500。等 30 分钟冷却（账号退避自动过期）再试。
+
+**`frames=0, choices=0`**
+
+上游一帧都不给。常见原因：WAF token 预算超了（一次读的文件太大）、或者账号被风控了。
+
+**模型列表拉不下来**
+
+`npm run models`，检查账号是否可用。缓存在 `config/models-cache.json`。
+
+**`Failed to create a Qwen chat`**
+
+token 过期或 WAF。先 `capture-login.js` 重登。
+
+**Windows 上报找不到浏览器**
+
+`.env` 里加 `PLAYWRIGHT_CHANNEL=chrome`。
+
+---
+
+## 探针脚本
+
+`scripts/probes/` 下有几个排查用的工具，不进主流程：
+
+- `probe-raw-sse.js` —— 直连上游，逐帧打印原始 SSE。用来判断某个现象是上游给的还是代理改的。
+  `node scripts/probes/probe-raw-sse.js "你的问题"`
+- `probe-local.js` —— 打本地代理，看 OpenAI 格式返回。`node scripts/probes/probe-local.js [stream|nonstream]`
+- `probe-content.js` —— 专查 content / reasoning_content 里有没有凭空多出换行。
+- `probe-models.js` —— 逐个模型发一句话，看哪些能用、哪些被限流。
+
+⚠️ 这些会真发请求。**别连着刷**，会触发 WAF 验证码。
+
+---
+
+## 项目结构
 
 ```text
-server.js                  # Express-сервер и OpenAI-compatible API
-public/                    # HTML, CSS и JS веб-чата
-src/config.js              # конфигурация порта, моделей и upstream
-src/qwen-client.js         # HTTP-клиент Qwen Chat v2
-src/chat-adapter.js        # преобразование Qwen <-> OpenAI
-src/tools.js               # протокол tool calling
-src/tool-executor.js       # bash, файлы и web search в sandbox
-src/agent.js               # агентный цикл и SSE-события
-src/chat-store.js          # локальное хранилище чатов
-src/web.js                 # REST API веб-чата
-src/account-store.js       # токен и cookies аккаунта
-src/ssxmod-manager.js      # генерация и ротация SSXMOD cookies
-scripts/login.js           # вход и захват аккаунта
-scripts/list-models.js     # обновление списка моделей
-scripts/install.js         # локальная установка и интеграции
-scripts/test-cookies.js    # тесты генерации cookies
-scripts/offline-sse-test.js # офлайн-тест SSE
+server.js                    # Express 入口 + OpenAI 兼容 API
+public/                      # 网页聊天的 HTML / CSS / JS
+src/config.js                # 端口、模型清单、上游地址等配置
+src/qwen-headers.js          # 上游请求头（必须与线上 SPA 一致，否则吃 WAF）
+src/qwen-client.js           # Qwen Chat v2 HTTP 客户端
+src/token-manager.js         # token 续期（本项目新增）
+src/chat-adapter.js          # Qwen ↔ OpenAI 格式互转
+src/tools.js                 # tool calling 协议
+src/tool-executor.js         # bash / 文件 / 联网搜索的沙箱执行
+src/agent.js                 # agent 循环与 SSE 事件
+src/chat-store.js            # 本地会话存储
+src/web.js                   # 网页端 REST API
+src/account-store.js         # 账号 token / cookie 管理
+src/ssxmod-manager.js        # SSXMOD cookie 生成与轮换
+scripts/capture-login.js     # 稳健版登录抓取（推荐）
+scripts/login.js             # 原版登录
+scripts/list-models.js       # 刷新模型清单
+scripts/test-token.js        # token 续期测试
+scripts/offline-sse-test.js  # SSE 转换测试
+scripts/probes/              # 排查用探针脚本
 ```
 
-## Безопасность
+---
 
-- Не публикуйте `config/accounts/*.json`, `.env` и содержимое `config/chats/`.
-- Не указывайте workspace с важными системными или приватными файлами.
-- Сервер не предназначен для публикации напрямую в интернет без аутентификации и reverse proxy.
-- Инструмент `bash` выполняется локально от имени текущего пользователя.
-- Используйте проект только в соответствии с правилами и условиями сервиса Qwen.
+## 安全
 
-## Устранение проблем
+- 别把 `config/accounts/*.json`、`.env`、`config/chats/` 提交或公开。
+- 别把沙箱目录指到有重要文件的地方。
+- 服务默认没有鉴权，**别直接暴露到公网**，要上就套反代加认证。
+- `bash` 工具是以当前用户身份在本机真跑的。
+- 只在遵守 Qwen 服务条款的前提下自用。
 
-**401 или `session expired`**
+---
 
-Авторouting временно исключит проблемный аккаунт. Откройте `npm run accounts` и перелогиньте его через `r`, либо выполните ручной вход.
+## 免责
 
-**504, HTML вместо JSON или WAF-слайдер**
+非官方浏览器端工具，仅供个人本地使用。Qwen / 阿里随时可能改内部 API、模型清单和响应格式，届时需要更新本代理。
 
-Обновите `QWEN_WEB_VERSION`, пройдите проверку в браузере и повторите вход.
+## 许可
 
-**Модели не загружаются**
-
-Проверьте аккаунт и выполните `npm run models`. Кэш моделей хранится в `config/models-cache.json`.
-
-**Не запускается автоматический вход**
-
-Установите Chromium через `npx playwright install chromium` или используйте ручной режим.
-
-## Дисклеймер
-
-Неофициальный browser-based инструмент для личного использования. Qwen/Alibaba может менять внутренний API, список моделей и формат ответов — это может привести к необходимости обновления прокси.
+上游 angyedz/QwenFreeApi **没有附任何 license 文件**，本仓库 fork 自它，因此同样未声明许可。自己用没问题，**别拿去做商业分发**。

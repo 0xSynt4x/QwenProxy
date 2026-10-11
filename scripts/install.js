@@ -2,20 +2,20 @@
 /**
  * npm run install:setup
  *
- * Интерактивный установщик:
- *   1. Проверяет окружение (node, npm, зависимости).
- *   2. Предлагает войти в аккаунт Qwen (npm run login / --cookie-only).
- *   3. Обновляет модели (npm run models).
- *   4. Добавляет systemd-user сервис (если пользователь разрешит).
- *   5. Добавляет провайдер `qwen` в конфиг opencode (если разрешит).
- *   6. Печатает итоговую сводку и адреса.
+ * 交互式安装器：
+ *   1. 检查环境（node、npm、依赖）。
+ *   2. 引导登录 Qwen 账号（capture-login.js）。
+ *   3. 刷新模型清单（npm run models）。
+ *   4. Linux 上可选装 systemd 用户服务（Windows 上跳过，给出手动方案）。
+ *   5. 可选把 `qwen` provider 写进 opencode 配置。
+ *   6. 打印总结和地址。
  */
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync, spawnSync } = require('child_process');
+const { execSync } = require('child_process');
 const readline = require('readline');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -35,7 +35,7 @@ const ask = (q, def = '') =>
 
 const yesNo = async (q, def = 'y') => {
   const a = (await ask(q, def)).toLowerCase();
-  return a === 'y' || a === 'yes' || a === 'д' || a === 'да';
+  return a === 'y' || a === 'yes' || a === '是' || a === '好' || a === 'д' || a === 'да';
 };
 
 const run = (cmd, opts = {}) => {
@@ -63,102 +63,113 @@ function hasPkg(name) {
   }
 }
 
+const isWindows = process.platform === 'win32';
+
 async function ensureDeps() {
-  heading('Зависимости');
+  heading('依赖');
   const deps = ['express', 'axios', 'dotenv', 'cors'];
   const missing = deps.filter((d) => !hasPkg(d));
   if (missing.length) {
-    console.log(`Не установлены: ${missing.join(', ')}`);
-    if (await yesNo('Установить (npm install)?')) {
+    console.log(`未安装：${missing.join(', ')}`);
+    if (await yesNo('现在安装（npm install）？')) {
       run('npm install --no-audit --no-fund');
     }
   } else {
-    console.log('Базовые зависимости уже на месте.');
+    console.log('基础依赖已就位。');
   }
   const pw = hasPkg('playwright');
   const pp = hasPkg('puppeteer');
   if (!pw && !pp) {
-    console.log('\nДля автозахвата токена нужен Playwright (Chromium).');
-    if (await yesNo('Установить playwright + chromium?')) {
+    console.log('\n自动抓登录态需要 Playwright。');
+    if (isWindows) {
+      console.log('Windows 上可以借本机 Chrome，不必下 Chromium：');
+      console.log('  set PLAYWRIGHT_CHANNEL=chrome');
+      console.log('  （写进 .env 也行）');
+    }
+    if (await yesNo('安装 playwright？')) {
       run('npm install playwright --no-audit --no-fund');
-      run('npx playwright install chromium --with-deps');
+      if (!isWindows) run('npx playwright install chromium --with-deps');
     }
   }
 }
 
 async function ensureLogin() {
   const accountStore = require('../src/account-store');
-  heading('Аккаунт Qwen');
+  heading('Qwen 账号');
   accountStore.load();
   if (accountStore.isAccount()) {
-    console.log(`Найдены сохранённые аккаунты Qwen.`);
-    if (await yesNo('Перелогиниться заново?', 'n')) {
-      run('npm run login');
+    console.log('已找到保存的 Qwen 账号。');
+    if (await yesNo('要重新登录吗？', 'n')) {
+      run('node scripts/capture-login.js');
     }
     return;
   }
-  console.log('Нужен аккаунт Qwen Chat (chat.qwen.ai).');
-  if (await yesNo('Открыть браузер для входа сейчас?')) {
-    run('npm run login');
+  console.log('需要一个 Qwen Chat 账号（chat.qwen.ai，免费注册）。');
+  if (await yesNo('现在开浏览器登录？')) {
+    run('node scripts/capture-login.js');
   } else {
-    console.log('Пропущено. Позже: npm run login');
+    console.log('已跳过。之后可跑：node scripts/capture-login.js');
   }
 }
 
 async function syncModels() {
-  heading('Модели');
-  if (await yesNo('Получить список актуальных моделей (npm run models)?')) {
+  heading('模型');
+  if (await yesNo('拉取最新模型清单（npm run models）？')) {
     run('npm run models');
   } else {
-    console.log('Пропущено. Позже: npm run models');
+    console.log('已跳过。之后可跑：npm run models');
   }
 }
 
 async function installSystemd() {
-  heading('Автозапуск (systemd user)');
-  let hasSystemd = false;
-  if (process.platform !== 'win32') {
-    if (fs.existsSync('/run/systemd/system')) {
-      hasSystemd = true;
-    } else {
-      try {
-        execSync('systemctl --user status', { stdio: 'ignore' });
-        hasSystemd = true;
-      } catch (_) {}
-    }
-  }
-  if (!hasSystemd) {
-    console.log('systemd не найден — пропускаю.');
+  heading('开机自启');
+  if (isWindows) {
+    console.log('Windows 上没有 systemd，跳过。');
+    console.log('要开机自启，用「任务计划程序」或 nssm 挂 `node server.js`。');
+    console.log('最省事：需要时手动 `npm start`。');
     return;
   }
-  const serviceName = 'qwen-free-api.service';
+  let hasSystemd = false;
+  if (fs.existsSync('/run/systemd/system')) {
+    hasSystemd = true;
+  } else {
+    try {
+      execSync('systemctl --user status', { stdio: 'ignore' });
+      hasSystemd = true;
+    } catch (_) {}
+  }
+  if (!hasSystemd) {
+    console.log('没找到 systemd —— 跳过。');
+    return;
+  }
+  const serviceName = 'qwen-proxy.service';
   const unitDir = path.join(os.homedir(), '.config', 'systemd', 'user');
   const unitPath = path.join(unitDir, serviceName);
   const already = fs.existsSync(unitPath);
 
   if (already) {
-    if (await yesNo(`Сервис ${serviceName} уже есть. Переустановить (enable --now)?`, 'y')) {
+    if (await yesNo(`服务 ${serviceName} 已存在。要重装吗（enable --now）？`, 'y')) {
       writeUnit(unitPath);
       run('systemctl --user daemon-reload');
       run(`systemctl --user enable --now ${serviceName}`);
     }
     return;
   }
-  if (await yesNo('Добавить автозапуск через systemd-user?')) {
+  if (await yesNo('装 systemd 用户服务做自启？')) {
     fs.mkdirSync(unitDir, { recursive: true });
     writeUnit(unitPath);
     run('systemctl --user daemon-reload');
     run(`systemctl --user enable --now ${serviceName}`);
-    console.log('Сервис включён. Управление: systemctl --user status qwen-free-api');
+    console.log('服务已启用。管理：systemctl --user status qwen-proxy');
   } else {
-    console.log('Автозапуск пропущен. Запуск вручную: npm start');
+    console.log('已跳过。手动启动：npm start');
   }
 }
 
 function writeUnit(unitPath) {
   const node = process.execPath;
   const unit = `[Unit]
-Description=Qwen Free API - local OpenAI-compatible proxy + web chat
+Description=QwenProxy - local OpenAI-compatible proxy for chat.qwen.ai
 After=network.target
 
 [Service]
@@ -186,11 +197,11 @@ async function installOpencode() {
   const cfgPath = path.join(cfgHome, 'opencode.json');
 
   if (!fs.existsSync(cfgPath)) {
-    console.log(`Не найден конфиг opencode (${cfgPath}).`);
-    if (await yesNo('Создать opencode.json с провайдером qwen?')) {
+    console.log(`没找到 opencode 配置（${cfgPath}）。`);
+    if (await yesNo('要创建 opencode.json 并写入 qwen provider 吗？')) {
       fs.mkdirSync(cfgHome, { recursive: true });
       fs.writeFileSync(cfgPath, JSON.stringify(providerConfig(), null, 2) + '\n', 'utf8');
-      console.log('  создан:', cfgPath);
+      console.log('  已创建：', cfgPath);
     }
     return;
   }
@@ -200,49 +211,39 @@ async function installOpencode() {
   try {
     cfg = JSON.parse(raw);
   } catch (_) {
-    console.log('  opencode.json невалиден (возможно это .jsonc). Пропускаю правку.');
+    console.log('  opencode.json 不是合法 JSON（可能是 .jsonc）。跳过改写。');
     return;
   }
   if (cfg.provider && cfg.provider.qwen) {
-    if (await yesNo('Провайдер qwen уже есть. Обновить его?')) {
+    if (await yesNo('qwen provider 已存在。要更新吗？')) {
       cfg.provider.qwen = providerConfig().provider.qwen;
       fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-      console.log('  обновлён:', cfgPath);
+      console.log('  已更新：', cfgPath);
     }
     return;
   }
-  if (await yesNo('Добавить провайдер qwen в opencode.json?')) {
+  if (await yesNo('把 qwen provider 加进 opencode.json？')) {
     cfg.provider = cfg.provider || {};
     cfg.provider.qwen = providerConfig().provider.qwen;
     fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-    console.log('  добавлен:', cfgPath);
+    console.log('  已添加：', cfgPath);
   }
 }
 
+/** 与 config.js 的 BASE_MODELS 保持一致 —— 实测账号可见的 7 个。 */
 function providerConfig() {
   const models = {
     'qwen3.8-max': [1000000, 131072],
+    'qwen3.7-max': [1000000, 131072],
     'qwen3.7-plus': [1000000, 65536],
-    'qwen3.7-max': [1000000, 81920],
-    'qwen3.8-max-preview': [1000000, 65536],
     'qwen3.6-plus': [1000000, 65536],
-    'qwen3.6-max-preview': [262144, 81920],
-    'qwen3.6-27b': [262144, 81920],
     'qwen3.5-plus': [1000000, 65536],
+    'qwen3.8-omni-flash': [1000000, 65536],
     'qwen3.5-omni-plus': [262144, 65536],
-    'qwen3.6-35b-a3b': [262144, 81920],
-    'qwen3.5-flash': [1000000, 65536],
-    'qwen3.5-397b-a17b': [262144, 65536],
-    'qwen3.5-omni-flash': [262144, 65536],
-    'qwen3-max-2026-01-23': [262144, 32768],
-    'qwen-plus-2025-07-28': [131072, 81920],
-    'qwen3-coder-plus': [1048576, 65536],
-    'qwen3-vl-plus': [262144, 81920],
-    'qwen3-omni-flash-2025-12-01': [65536, 13684],
   };
   const modelConfig = Object.fromEntries(Object.entries(models).map(([id, [context, output]]) => [id, {
     name: id,
-    reasoning: !id.includes('omni-flash') && !id.includes('omni-plus'),
+    reasoning: !id.includes('omni'),
     tool_call: true,
     limit: { context, output },
   }]));
@@ -251,7 +252,7 @@ function providerConfig() {
     provider: {
       qwen: {
         npm: '@ai-sdk/openai-compatible',
-        name: 'Qwen Free',
+        name: 'QwenProxy',
         options: {
           baseURL: 'http://localhost:3265/v1',
           apiKey: 'local',
@@ -263,26 +264,27 @@ function providerConfig() {
 }
 
 async function summary() {
-  heading('Итог');
+  heading('总结');
   line();
-  const acc = fs.existsSync(ACCOUNT_FILE) || (fs.existsSync(ACCOUNTS_DIR) && fs.readdirSync(ACCOUNTS_DIR).some((name) => name.endsWith('.json')));
-  console.log('  Аккаунты Qwen       : ' + (acc ? 'OK' : 'не настроены (npm run accounts)'));
-  console.log('  Модели              : ' + (fs.existsSync(path.join(CONFIG_DIR, 'models-cache.json')) ? 'кэш есть' : 'npm run models'));
-  console.log('  Веб-чат             : http://localhost:3265/');
-  console.log('  OpenAI API          : http://localhost:3265/v1');
-  console.log('  Workspace (файлы)   : ' + (process.env.QWEN_WORKSPACE || path.join(os.homedir(), 'qwen-workspace')));
+  const acc = fs.existsSync(ACCOUNT_FILE)
+    || (fs.existsSync(ACCOUNTS_DIR) && fs.readdirSync(ACCOUNTS_DIR).some((name) => name.endsWith('.json')));
+  console.log('  Qwen 账号        : ' + (acc ? 'OK' : '未配置（node scripts/capture-login.js）'));
+  console.log('  模型清单         : ' + (fs.existsSync(path.join(CONFIG_DIR, 'models-cache.json')) ? '有缓存' : 'npm run models'));
+  console.log('  网页聊天         : http://localhost:3265/');
+  console.log('  OpenAI API       : http://localhost:3265/v1');
+  console.log('  Workspace（文件）: ' + (process.env.QWEN_WORKSPACE || path.join(os.homedir(), 'qwen-workspace')));
   line();
-  console.log('\nГотово. Запусти: npm start  (или открой http://localhost:3265)');
+  console.log('\n搞定。启动：npm start（或直接开 http://localhost:3265）');
 }
 
 (async () => {
   console.log('');
-  console.log('  Qwen Free API — установщик');
-  console.log('  Прокси + веб-чат + тулы + opencode');
+  console.log('  QwenProxy — 安装器');
+  console.log('  代理 + 网页聊天 + 工具 + opencode');
   line();
 
   if (!process.env.OPENCODE_ALLOW_UNSAFE && process.getuid && process.getuid() === 0) {
-    console.log('\nНе запускай установщик от root.');
+    console.log('\n别用 root 跑安装器。');
     process.exit(1);
   }
 
@@ -295,7 +297,7 @@ async function summary() {
 
   rl.close();
 })().catch((e) => {
-  console.error('\nУстановка прервана:', e.message);
+  console.error('\n安装中断：', e.message);
   rl.close();
   process.exit(1);
 });

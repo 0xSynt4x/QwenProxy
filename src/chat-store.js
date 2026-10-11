@@ -6,8 +6,8 @@ const config = require('./config');
 const { generateUUID, logger } = require('./util');
 
 /**
- * Простое файловое хранилище чатов (по одному JSON на чат).
- * Путь: config/chats/<id>.json
+ * 简单的文件式聊天存储（每个聊天一个 JSON 文件）。
+ * 路径：config/chats/<id>.json
  */
 
 const CHATS_DIR = path.join(config.CONFIG_DIR, 'chats');
@@ -28,7 +28,7 @@ function list() {
       if (raw && raw.id) {
         chats.push({
           id: raw.id,
-          title: raw.title || 'Новый чат',
+          title: raw.title || '新会话',
           model: raw.model || config.DEFAULT_MODEL,
           createdAt: raw.createdAt,
           updatedAt: raw.updatedAt,
@@ -57,7 +57,7 @@ function create({ title, model, settings } = {}) {
   const now = Date.now();
   const chat = {
     id: generateUUID(),
-    title: title || 'Новый чат',
+    title: title || '新会话',
     model: model || config.DEFAULT_MODEL,
     settings: settings || {},
     messages: [],

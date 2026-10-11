@@ -1,0 +1,16 @@
+# 统一换行：仓库内一律 LF，检出到 Windows 时也保持 LF，避免每次 diff 都被换行噪音淹没。
+* text=auto eol=lf
+
+# 二进制文件别做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+
+# 锁文件不做 diff（体积大、无阅读价值）
+package-lock.json -diff

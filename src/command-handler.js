@@ -26,13 +26,22 @@ const toolMemo = require('./tool-memo');
 const sessionStore = require('./session-store');
 const qwenClient = require('./qwen-client');
 
+/**
+ * 自更新：拉最新代码，然后重启服务。
+ *
+ * ⚠️ 原版写死了 `systemctl --user restart`（Linux 专用），Windows 上跑必然失败。
+ * 现在按平台分支：Windows 不尝试重启服务（也没有 /bin/bash），只拉代码并提示手动重启。
+ */
 function triggerSelfUpdate() {
   const repoDir = path.resolve(__dirname, '..');
-  const updateScript = `sleep 0.5 && cd "${repoDir}" && git pull origin master && systemctl --user restart qwen-free-api.service`;
-  const child = spawn('/bin/bash', ['-c', updateScript], {
-    detached: true,
-    stdio: 'ignore',
-  });
+  const isWindows = process.platform === 'win32';
+
+  const restart = isWindows ? '' : ' && systemctl --user restart qwen-proxy.service';
+  const script = `sleep 1 && cd "${repoDir}" && git pull origin master${restart}`;
+
+  const child = isWindows
+    ? spawn(process.env.COMSPEC || 'cmd.exe', ['/d', '/s', '/c', script], { detached: true, stdio: 'ignore', windowsHide: true })
+    : spawn('/bin/bash', ['-c', script], { detached: true, stdio: 'ignore' });
   child.unref();
 }
 
@@ -45,9 +54,9 @@ function checkUpdates() {
     const behindCount = execSync(`cd "${repoDir}" && git rev-list --count HEAD..origin/master`, { encoding: 'utf8' }).trim();
 
     if (local === remote || behindCount === '0') {
-      return `✅ **Qwen Free API is Up To Date**\n\n- **Current Version:** \`${local}\` (latest)\n- **Status:** All changes synced with GitHub origin/master.`;
+      return `✅ **QwenProxy 已是最新**\n\n- **Current Version:** \`${local}\` (latest)\n- **Status:** All changes synced with GitHub origin/master.`;
     }
-    return `🔍 **Update Available for Qwen Free API!**\n\n- **Current Version:** \`${local}\`\n- **Latest Version:** \`${remote}\` (${behindCount} commit(s) behind)\n\n*Run \`$qwen-api update\` to apply the update automatically.*`;
+    return `🔍 **QwenProxy 有新版本！**\n\n- **Current Version:** \`${local}\`\n- **Latest Version:** \`${remote}\` (${behindCount} commit(s) behind)\n\n*Run \`$qwen-api update\` to apply the update automatically.*`;
   } catch (e) {
     return `⚠️ **Update Check Failed**: ${e.message}`;
   }
@@ -119,11 +128,13 @@ async function handleCommand(messages, sessionKey, req, res) {
     responseText = checkUpdates();
   } else if (cmd === 'update' || cmd === 'upgrade') {
     triggerSelfUpdate();
-    responseText = `🚀 **Qwen Free API Self-Updater Initiated**\n\n` +
-      `- **Action:** Pulling latest code from GitHub \`master\`...\n` +
-      `- **Process:** Independent detached background worker initialized.\n` +
-      `- **Service:** Restarting \`qwen-free-api.service\`...\n\n` +
-      `*Check status in a few seconds via \`$qwen-api stats\`.*`;
+    responseText = `🚀 **QwenProxy 自更新已启动**\n\n` +
+      `- **动作：** 正在从 GitHub \`master\` 拉取最新代码…\n` +
+      `- **方式：** 独立的分离后台进程，不阻塞当前请求。\n` +
+      (process.platform === 'win32'
+        ? `- **注意：** Windows 上不会自动重启服务，拉完代码后请手动重启 \`node server.js\`。\n\n`
+        : `- **服务：** 正在重启 \`qwen-proxy.service\`…\n\n`) +
+      `*几秒后用 \`$qwen-api stats\` 查看状态。*`;
   } else if (cmd === 'compressor' || cmd === 'comp') {
     if (arg1 === 'off' || arg1 === 'disable' || arg1 === 'false' || arg1 === '0') {
       disabledSessions.add(sessionKey);
@@ -218,7 +229,7 @@ async function handleCommand(messages, sessionKey, req, res) {
     const uptimeMin = Math.floor(uptimeSec / 60);
     const memoStats = toolMemo.stats();
     const accounts = accountStore.list();
-    responseText = `📊 **Qwen Free API Proxy Statistics**\n\n` +
+    responseText = `📊 **QwenProxy 运行统计**\n\n` +
       `- **Uptime:** ${uptimeMin} minute(s) (${uptimeSec}s)\n` +
       `- **Total Requests:** ${requestCount}\n` +
       `- **Configured Accounts:** ${accounts.length} (${accounts.filter(a => a.available).length} available)\n` +
@@ -273,7 +284,7 @@ async function handleCommand(messages, sessionKey, req, res) {
     toolMemo.clear(sessionKey);
     responseText = `🔄 **Session Reset Complete**\n\nCleared Qwen upstream thread ID and local checkpoint history. Next turn will start on a clean thread.`;
   } else {
-    responseText = `🛠️ **Qwen Free API Proxy Commands ($qwen-api)**\n\n` +
+    responseText = `🛠️ **QwenProxy 命令 ($qwen-api)**\n\n` +
       `- \`$qwen-api compressor off\` / \`on\` — Disable or enable context compaction for this session.\n` +
       `- \`$qwen-api compressor status\` — View compressor and active session status.\n` +
       `- \`$qwen-api accounts\` — List all configured Qwen accounts.\n` +

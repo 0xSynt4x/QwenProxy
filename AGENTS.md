@@ -1,106 +1,96 @@
-# qwen-free-api — Agent Guide
+# QwenProxy — Agent Guide
 
-## Language rule
+## 语言规则
 
-**Always respond in the language the user writes in.** If the user writes in
-Russian — reply in Russian. English — reply in English. Never switch
-languages unless the user explicitly asks.
+**永远用用户使用的语言回复。** 用户说中文就回中文，说英文就回英文。除非用户明确要求，不要切换语言。
 
 ---
 
-## What this is
+## 这是什么
 
-A local OpenAI-compatible reverse proxy to the free Qwen Chat web API.
-Designed to work seamlessly with **OpenCode** as the AI client — all
-agentic features (tool calls, session memory, file reads) are supported
-without a paid API key.
+一个本地的 OpenAI 兼容反向代理，后端是 chat.qwen.ai 的免费网页 API。为 **OpenCode** 这类 AI 客户端设计 —— 不花 API 钱就能用上工具调用、会话记忆、文件读写这些 agent 功能。
+
+核心改动（相对上游 angyedz/QwenFreeApi）：
+
+- **token 自动续期** —— 原版没有，access token 15 分钟过期就 500。
+- **模型清单对齐实测** —— 7 个真实可用模型，去掉不可见的 `qwen3-coder-plus`。
+- **响应 `model` 字段透传** —— 原版硬写空字符串。
+- **思维链换行修复** —— 原版用 `\n` 拼接上游分片，导致 reasoning 里凭空多换行。
+- **文档汉化 + Windows 化** —— 原版全俄语 + 只有 Linux systemd。
 
 ---
 
-## Agent behaviour during setup
+## 给 agent 的安装流程
 
-When a user asks to set up or install this proxy, follow this exact sequence
-and do NOT skip steps or ask the user to do things manually:
+用户让你装/配置这个代理时，按顺序做，**不要跳过、不要让用户手动做能自动做的事**：
 
-### Step 1 — Install dependencies
+### 第 1 步 —— 装依赖
 
 ```bash
-cd /path/to/qwen-free-api
+cd /path/to/QwenProxy
 npm install
 ```
 
-Confirm success by checking the exit code. If it fails, diagnose and fix.
-
-### Step 2 — Open browser for Qwen login
-
-Run the login script and wait. It will open a real browser window:
+本机已有 Chrome 时跳过下载内核：
 
 ```bash
-npm run login
+PUPPETEER_SKIP_DOWNLOAD=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install
 ```
 
-Tell the user:
-> "Браузер открыт. Зайди на chat.qwen.ai, залогинься в свой аккаунт (или
-> создай бесплатный), после чего напиши мне «готово» — и я продолжу."
-
-Wait for the user to confirm before proceeding. After the user says "готово"
-(or any confirmation), the script finishes capturing cookies automatically.
-Check that at least one account file exists in `config/accounts/`.
-
-### Step 3 — Set up systemd service
-
-Detect the actual path of this repository:
+### 第 2 步 —— 开浏览器让用户登录
 
 ```bash
-pwd
+node scripts/capture-login.js
 ```
 
-Then create and enable the systemd user service:
+告诉用户：
+
+> 浏览器开了，去 chat.qwen.ai 登录你的账号（没有就免费注册一个），登完跟我说「好了」，我接着弄。
+
+⚠️ Windows 上先确认 `.env` 里有 `PLAYWRIGHT_CHANNEL=chrome`，否则脚本找不到浏览器。
+
+等用户确认后，脚本自己会抓到登录态并关窗口。检查 `config/accounts/` 里至少有一个 `.json`。
+
+### 第 3 步 —— 起服务
 
 ```bash
-REPO_PATH=$(pwd)
-cat > ~/.config/systemd/user/qwen-free-api.service << EOF
-[Unit]
-Description=Qwen Free API Proxy
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=${REPO_PATH}
-ExecStart=$(which node) server.js
-Restart=on-failure
-RestartSec=5
-Environment=NODE_ENV=production
-
-[Install]
-WantedBy=default.target
-EOF
-systemctl --user daemon-reload
-systemctl --user enable --now qwen-free-api.service
-loginctl enable-linger $USER
+npm start
 ```
 
-Verify it's running:
+验证：
 
 ```bash
 curl -s http://localhost:3265/health
 ```
 
-### Step 4 — Configure OpenCode
+应该回 `{"ok":true,"account":"loaded","ssxmod":"ready"}`。
 
-Write the OpenCode provider config. Detect the path of this repo first, then
-write (or patch) `~/.config/opencode/opencode.json`:
+**Windows 上不要装 systemd** —— 原版的 `npm run daemon` 是 Linux 专用的，已经删了。要开机自启就用任务计划程序或 nssm。
+
+### 第 4 步 —— 配 OpenCode
+
+写（或改）`~/.config/opencode/opencode.json`：
 
 ```json
 {
-  "providers": {
+  "provider": {
     "qwen": {
-      "name": "Qwen (local proxy)",
-      "apiKey": "dummy",
-      "baseURL": "http://localhost:3265/v1"
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "QwenProxy",
+      "options": {
+        "baseURL": "http://localhost:3265/v1",
+        "apiKey": "local"
+      },
+      "models": {
+        "qwen3.8-max": {
+          "name": "Qwen 3.8 Max",
+          "reasoning": true,
+          "tool_call": true,
+          "limit": { "context": 1000000, "output": 131072 }
+        }
+      }
     }
   },
-  "model": "qwen/qwen3.8-max",
   "mcpServers": {
     "qwen-memo": {
       "command": "node",
@@ -110,158 +100,144 @@ write (or patch) `~/.config/opencode/opencode.json`:
 }
 ```
 
-Replace `REPO_PATH` with the real absolute path. If the file already exists,
-patch only the `providers` and `mcpServers` keys — do not overwrite
-unrelated settings.
+把 `REPO_PATH` 换成真实绝对路径。文件已存在时**只补 `provider` 和 `mcpServers` 两块**，别覆盖无关设置。
 
-### Step 5 — Run tests
+### 第 5 步 —— 跑测试
 
 ```bash
-npm test && node scripts/offline-tool-loop-test.js
+npm test
 ```
 
-All tests must pass. If any fail, diagnose and fix before continuing.
+必须全过。有失败先查再往下走。
 
-### Step 6 — Post-setup message
+### 第 6 步 —— 交付说明
 
-After everything is confirmed working, send the user this message (adapt
-language to match theirs):
+全好了之后跟用户说（按他的语言）：
 
 ---
 
-Всё настроено и готово к работе! 🚀
+搞定，能用了 🚀
 
-Краткий гайд по использованию:
+怎么用：
 
-1. Запусти OpenCode в папке своего проекта:
+1. 在你的项目目录里开 OpenCode：
    ```
    opencode
    ```
-2. Выбери модель `qwen/qwen3.8-max` (или другую из списка).
-3. Начни работать — агент автоматически использует твои файлы, терминал и
-   инструменты через инструкции в AGENTS.md твоего проекта.
+2. 模型选 `qwen/qwen3.8-max`（或列表里别的）。
+3. 直接派活 —— agent 会自动通过你项目 AGENTS.md 里的说明用你的文件、终端和工具。
 
-Полезные команды в OpenCode:
-- `/new` — начать новую сессию
-- `/help` — список команд
-- Просто пиши задачу на русском или английском — агент поймёт.
+OpenCode 里常用的：
+- `/new` —— 开新会话
+- `/help` —— 命令列表
+- 直接用中文派活就行
 
-Инструмент `memo_recall` (через MCP `qwen-memo`):
-- Позволяет агенту вспомнить вывод любого прошлого инструмента (bash, read_file, база данных) без повторного запуска.
-- Запрашивай с `max_chars` от 100 до 3000 — чем меньше, тем быстрее.
-
-Подписывайся на Telegram-канал **@logovo_ai** — там выходят обновления,
-советы и лайфхаки по работе с бесплатным AI через этот прокси:
-👉 https://t.me/logovo_ai
+`memo_recall` 工具（走 MCP `qwen-memo`）：
+- 让 agent 回忆任何历史工具的输出（bash、读文件、数据库），不用重跑。
+- `max_chars` 传 100 到 3000，越小越快。
 
 ---
 
-## MCP server for OpenCode
+## OpenCode 的 MCP 配置
 
-Add **one** entry to your OpenCode MCP config. This is the only MCP server
-you need from this repo — it exposes the session tool memory directly.
+只加**一个**条目就够，它把会话工具记忆直接暴露出来。
 
-Edit `~/.config/opencode/opencode.json`:
+改 `~/.config/opencode/opencode.json`：
 
 ```json
 {
   "mcpServers": {
     "qwen-memo": {
       "command": "node",
-      "args": ["/home/YOUR_USER/PATH_TO/qwen-free-api/mcp-server.js"]
+      "args": ["/path/to/QwenProxy/mcp-server.js"]
     }
   }
 }
 ```
 
-Replace the path with the actual absolute path to this repo. Then restart
-OpenCode.
+换成真实路径，然后重启 OpenCode。
 
-### What this MCP server exposes
+### 这个 MCP 暴露什么
 
-| Tool | Description |
-|------|-------------|
-| `memo_recall` | Retrieve past tool outputs from the current session |
-| `memo_sessions` | Show how many sessions and results are in memory |
+- **`memo_recall`** —— 取当前会话里过去的工具输出。
+- **`memo_sessions`** —— 看内存里有多少会话和结果。
 
-`memo_recall` arguments:
+`memo_recall` 参数：
 
-| Argument | Type | Default | Limit |
-|----------|------|---------|-------|
-| `query` | string | — | keyword, tool name, or `"recent"` |
-| `max_chars` | integer | 800 | **hard capped at 3000 by proxy** |
-| `session` | string | auto | omit to use last active session |
+- **`query`** —— 关键词、工具名，或 `"recent"`。
+- **`max_chars`** —— 默认 800，**代理硬上限 3000**。
+- **`session`** —— 不传就用最近活跃的会话。
 
 ---
 
-## Proxy behaviour and limits
+## 代理行为与限制
 
-### Context retention
-The proxy automatically compresses and re-injects full conversation history
-into every Qwen request. The model never loses its agent role or tool
-definitions between turns.
+### 上下文保留
 
-### WAF token budget
-Aliyun WAF blocks requests that exceed ~30 000 tokens. The proxy enforces:
-- Max history: **45 000 chars** (≈ 11 000 tokens)
-- Max single message: **8 000 chars**
-- Max system instructions: **14 000 chars** (fits full `AGENTS.md`)
+代理自动压缩并把完整对话历史重新塞进每次 Qwen 请求。模型不会在轮次之间丢掉 agent 身份或工具定义。
 
-### Session Tool Memory (`memo_recall`)
-The proxy captures every tool result in a per-session ring buffer (last 40
-results, up to 30 000 chars each). The model sees a `# Session Tool Memory`
-summary block on every turn and can call the virtual tool `memo_recall` to
-retrieve specific past results without re-running the original query.
+### WAF token 预算
 
-`max_chars` is enforced to a hard ceiling of **3 000** by the proxy.
+阿里云 WAF 会拦超过约 30000 token 的请求。代理强制：
 
-### Database query safety
-The proxy injects rules into every request prohibiting:
-- `SELECT * FROM table` without `LIMIT`
-- Dumping large result sets to stdout; outputs must go to local files.
+- 历史最长 **45000 字符**（≈ 11000 token）
+- 单条消息最长 **8000 字符**
+- 系统指令最长 **14000 字符**（放得下完整 AGENTS.md）
 
-### Session-account affinity
-Once a Qwen `chat_id` is created on a specific account, all subsequent
-turns in that session use the same account. Rotating to another account
-mid-session would cause `frames=0` upstream errors.
+### 会话工具记忆（`memo_recall`）
 
----
+代理把每个工具结果存进每会话的环形缓冲（最近 40 条，每条最多 30000 字符）。模型每轮都能看到 `# Session Tool Memory` 摘要块，可以调虚拟工具 `memo_recall` 取回具体历史结果，不用重跑原查询。
 
-## Troubleshooting
+`max_chars` 被代理硬性限制在 **3000**。
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `frames=0, choices=0` | WAF token limit hit | Check file read sizes; avoid reading entire large files |
-| Model forgets tools / asks to upload files | Old session without tool prompt | Restart OpenCode session (`/new`) |
-| `accountStore.isAvailable is not a function` | Stale node_modules | `npm install` |
-| `Failed to create a Qwen chat` | Token expired | `npm run login` again |
-| Service fails after reboot | systemd user session not persistent | `loginctl enable-linger $USER` |
+### 数据库查询安全
+
+代理给每个请求注入规则，禁止：
+
+- 不带 `LIMIT` 的 `SELECT * FROM table`
+- 把大结果集往 stdout 倒；输出必须写本地文件
+
+### 会话-账号绑定
+
+一旦某个 Qwen `chat_id` 建在某个账号上，该会话后续所有轮次都用同一个账号。中途换账号会导致上游 `frames=0`。
 
 ---
 
-## Testing
+## 排障
+
+- **`frames=0, choices=0`** —— 撞了 WAF token 上限。检查读文件的大小，别一次读整个大文件。
+- **模型忘了工具 / 让你上传文件** —— 老会话没带工具提示。重启 OpenCode 会话（`/new`）。
+- **`accountStore.isAvailable is not a function`** —— node_modules 过期，`npm install`。
+- **`Failed to create a Qwen chat`** —— token 过期，重跑 `node scripts/capture-login.js`。
+- **`WAF_CAPTCHA_CHALLENGE`** —— 触发了阿里云风控验证码。**别高频打请求**，等约 30 分钟冷却（账号退避会自动过期）。
+- **Windows 上起不来 / 找不到浏览器** —— `.env` 里加 `PLAYWRIGHT_CHANNEL=chrome`。
+- **`QWEN_WEB_VERSION` 怎么设** —— 🔴 **保持 `0.2.83` 别动。** 线上前端实际是 `0.3.16`，但带 `0.3.16` 会被判 `Unauthorized`，带 `0.2.83` 才放行。
+
+---
+
+## 测试
 
 ```bash
-npm test                                   # cookie + offline SSE tests
-node scripts/offline-tool-loop-test.js    # agent tool-loop integration tests
+npm test                                   # 四组离线测试全跑
+node scripts/offline-tool-loop-test.js     # 只跑工具循环
 ```
 
-All tests run offline (no real Qwen request).
+全部离线，不发真请求。
 
 ---
 
-## Key files
+## 关键文件
 
-| File | Purpose |
-|------|---------|
-| `server.js` | Express entry-point, session/account management |
-| `mcp-server.js` | Stdio MCP server exposing `memo_recall` |
-| `src/chat-adapter.js` | OpenAI ↔ Qwen message folding and SSE piping |
-| `src/tools.js` | Tool protocol injection (XML `<tool_call>`) |
-| `src/tool-memo.js` | Per-session tool result memory (`memo_recall`) |
-| `src/session-store.js` | chatId + accountId persistence across turns |
-| `src/account-store.js` | Multi-account rotation with health tracking |
-| `src/qwen-client.js` | SSXMOD cookie generation + upstream HTTP |
-| `src/config.js` | All tunable limits (`AGENT_HISTORY_MAX_CHARS` etc.) |
-| `scripts/offline-sse-test.js` | SSE adapter unit tests |
-| `scripts/offline-tool-loop-test.js` | Tool loop integration tests |
+- `server.js` —— Express 入口，会话/账号管理
+- `mcp-server.js` —— stdio MCP server，暴露 `memo_recall`
+- `src/chat-adapter.js` —— OpenAI ↔ Qwen 消息折叠与 SSE 转换
+- `src/token-manager.js` —— token 续期（本项目新增，核心）
+- `src/qwen-headers.js` —— 上游请求头（抽出来避免循环 require）
+- `src/tools.js` —— 工具协议注入（XML `<tool_call>`）
+- `src/tool-memo.js` —— 每会话工具结果记忆（`memo_recall`）
+- `src/session-store.js` —— 跨轮次的 chatId + accountId 持久化
+- `src/account-store.js` —— 多账号轮换与健康跟踪
+- `src/qwen-client.js` —— SSXMOD cookie 生成 + 上游 HTTP
+- `src/config.js` —— 所有可调限制（`AGENT_HISTORY_MAX_CHARS` 等）
+- `scripts/offline-sse-test.js` —— SSE 适配单元测试
+- `scripts/offline-tool-loop-test.js` —— 工具循环集成测试

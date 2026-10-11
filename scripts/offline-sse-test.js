@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * offline-sse-test.js — тест перевода Qwen SSE -> OpenAI в реальном формате 0.2.83.
+ * offline-sse-test.js —— 按 0.2.83 的真实格式测试 Qwen SSE -> OpenAI 转换。
  */
 const { Readable } = require('stream');
 const { parseQwenSSE, collectNonStream, preparePublicPayload } = require('../src/chat-adapter');
@@ -343,6 +343,61 @@ const makeArrayContentStream = () => Readable.from([
   });
   if (!timeoutError || !/timed out/.test(timeoutError.message)) {
     throw new Error('idle upstream stream was not timed out');
+  }
+
+  // ---- Regression: token/model/think-buffer fixes (2026-10-12) ----
+
+  // (a) reasoning_content must not gain newlines at upstream chunk boundaries.
+  //     Upstream slices the thought chain into tiny fragments; joining with '\n'
+  //     used to shred it (the content path already used join('')).
+  const thinkSplitStream = () => Readable.from([
+    Buffer.from([
+      'data: {"choices":[{"delta":{"content":"<thi"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"nk>用户"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"要求用三句话"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"介绍乌鲁木齐"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"</thi"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"nk>\\n\\n乌鲁木齐是"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"新疆首府。"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"","status":"finished","phase":"answer"}}]}\n',
+    ].join('')),
+  ]);
+
+  const thinkJson = await collectNonStream(thinkSplitStream(), { model: 'qwen3.8-max' });
+  const thinkMsg = thinkJson.choices[0].message;
+  if (thinkMsg.reasoning_content !== '用户要求用三句话介绍乌鲁木齐') {
+    throw new Error('reasoning_content gained spurious newlines: ' + JSON.stringify(thinkMsg.reasoning_content));
+  }
+  if (thinkMsg.content !== '乌鲁木齐是新疆首府。') {
+    throw new Error('leading newlines after </think> were not stripped: ' + JSON.stringify(thinkMsg.content));
+  }
+
+  // (b) `model` must be echoed back, not an empty string.
+  if (thinkJson.model !== 'qwen3.8-max') {
+    throw new Error('non-stream response model is empty: ' + JSON.stringify(thinkJson.model));
+  }
+  const modelChunks = [];
+  await new Promise((resolve) => {
+    parseQwenSSE(thinkSplitStream(), (line) => modelChunks.push(JSON.parse(line.slice(6))), resolve, {
+      model: 'qwen3.7-plus',
+    });
+  });
+  if (!modelChunks.length || modelChunks.some((c) => c.model !== 'qwen3.7-plus')) {
+    throw new Error('stream chunk model is empty or inconsistent');
+  }
+
+  // (c) An explicit newline split across two upstream frames must also be eaten
+  //     (the first frame carries only the '\n', the second starts with the text).
+  const splitNewlineStream = () => Readable.from([
+    Buffer.from([
+      'data: {"choices":[{"delta":{"content":"<think>x</think>\\n"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"\\n正文"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"","status":"finished","phase":"answer"}}]}\n',
+    ].join('')),
+  ]);
+  const splitNewline = await collectNonStream(splitNewlineStream());
+  if (splitNewline.choices[0].message.content !== '正文') {
+    throw new Error('newline split across frames was not stripped: ' + JSON.stringify(splitNewline.choices[0].message.content));
   }
 
   console.log('\nSSE ADAPTER OK');

@@ -114,7 +114,7 @@ function buildToolPrompt(tools, toolChoice) {
     '- For database backups or dumps, NEVER dump table contents into chat stdout. Write the output directly into a local file (e.g. using a script, `> file.json`, or a pagination script) and return only a brief summary to chat.',
     '- When a tool is needed or when asked to create/edit a file or execute a plan, your response MUST contain a `<tool_call>` block.',
     '- NEVER state that a file was created or modified unless you have actually emitted a `<tool_call>` (such as `write_file` or `edit_file`) and received its `<tool_response>`.',
-    '- If the user says "продолжи", "continue", "go ahead", or approves a plan ("давай" / "делай"), do NOT output TODO lists or planning text without a tool — execute the next step immediately using a `<tool_call>` block.',
+    '- If the user says "продолжи" / "continue" / "继续", "go ahead", or approves a plan ("давай" / "делай" / "好" / "可以"), do NOT output TODO lists or planning text without a tool — execute the next step immediately using a `<tool_call>` block.',
     '- Use exact tool names and required arguments; multiple calls may be consecutive.',
     '- After each result, continue with the next tool if needed; answer normally only when done.',
     '- If you need data from a previous tool result in this session, call `memo_recall` instead of re-running the original tool. Check `# Session Tool Memory` section first — the data may already be visible.',

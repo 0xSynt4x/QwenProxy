@@ -7,7 +7,7 @@ const { logger } = require('./util');
 let activeResolver = null;
 
 /**
- * Автоматически вызывать Playwright окно с капчей для аккаунта.
+ * 为指定账号自动弹出 Playwright 验证码窗口。
  * @param {string} accountId
  * @param {string} captchaUrl
  * @returns {Promise<boolean>}
@@ -22,7 +22,7 @@ function solveCaptcha(accountId, captchaUrl = '') {
     const args = ['--account', accountId, '--cookie-only'];
     if (captchaUrl) args.push('--captcha', captchaUrl);
     
-    // Запускаем login.js в видимом режиме (headless: false по умолчанию)
+    // 以可见模式启动 login.js（默认 headless: false）
     const child = spawn(process.execPath, [scriptPath, ...args], {
       stdio: 'inherit',
       env: { ...process.env },

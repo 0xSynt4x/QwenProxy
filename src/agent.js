@@ -7,27 +7,26 @@ const toolExecutor = require('./tool-executor');
 const { logger } = require('./util');
 
 /**
- * Агентный цикл чата.
+ * 聊天的 Agent 循环。
  *
- * Раньше каждый раунд ходил HTTP-запросом в СОБСТВЕННЫЙ /v1/chat/completions
- * (PROXY_URL). Это ломало tool loop: двойная сериализация OpenAI<->Qwen на
- * каждый ход, лишний HTTP-хоп и незаметное пересоздание upstream-треда при
- * внутренних ретраях /v1. Теперь агент вызывает Qwen напрямую через
- * chat-adapter/qwen-client:
- *   - chat.qwenChatId запоминается на чате и переживает chatStore.save(),
- *     поэтому все раунды одного чата продолжают ОДИН upstream-тред;
- *   - с готовым chatId адаптер отправляет только текущее сообщение
- *     (currentOnly), без повторной вкладки всей истории в каждый tool-ход;
- *   - мёртвый тред (frames=0) -> один ретрай на свежем треде с полной историей,
- *     как retry в server.js.
+ * 过去每一轮都通过 HTTP 请求打到项目自己的 /v1/chat/completions
+ * （PROXY_URL）。这破坏了工具循环：每一轮都要做一次 OpenAI<->Qwen 的
+ * 双重序列化，多一次 HTTP 跳转，且 /v1 内部重试时会悄无声息地重建上游会话。
+ * 现在 Agent 通过 chat-adapter/qwen-client 直接调用 Qwen：
+ *   - chat.qwenChatId 记在聊天对象上并随 chatStore.save() 持久化，
+ *     因此同一聊天的所有轮次都延续同一个上游会话；
+ *   - 已有 chatId 时适配器只发送当前消息（currentOnly），
+ *     不再把整段历史重复塞进每一次工具调用；
+ *   - 会话死亡（frames=0）-> 在全新会话上用完整历史重试一次，
+ *     与 server.js 中的 retry 一致。
  *
- * События для веб-клиента не меняются: reasoning/text/round/tool/tool_result.
+ * 发给 Web 客户端的事件不变：reasoning/text/round/tool/tool_result。
  */
 
 const MAX_ROUNDS = 6;
 
 // ---------------------------------------------------------------------------
-// Потребитель Qwen-стрима: reasoning/content -> клиенту, tool_calls -> на исполнение
+// Qwen 流消费者：reasoning/content -> 客户端，tool_calls -> 交给执行器
 // ---------------------------------------------------------------------------
 
 /**
@@ -37,8 +36,8 @@ function consumeQwenStream(stream, emit, toolParser) {
   return new Promise((resolve, reject) => {
     const state = {
       content: '',
-      reasoning: '', // буфер для инкрементальных событий в UI
-      reasoningAll: '', // полный reasoning для истории чата
+      reasoning: '', // UI 增量事件用的缓冲区
+      reasoningAll: '', // 写入聊天历史的完整 reasoning
       byIndex: new Map(), // index -> {id, name, arguments}
       finish: null,
     };
@@ -95,8 +94,8 @@ function consumeQwenStream(stream, emit, toolParser) {
       }
     };
 
-    // parseQwenSSE сам нарезает upstream SSE и отдаёт OpenAI-shaped строки,
-    // включая tool_calls-дельты, когда передан toolParser.
+    // parseQwenSSE 自己切分上游 SSE，并输出 OpenAI 形状的行，
+    // 传入 toolParser 时还包括 tool_calls 增量。
     chatAdapter.parseQwenSSE(
       stream,
       handleLine,
@@ -126,7 +125,7 @@ function consumeQwenStream(stream, emit, toolParser) {
 }
 
 // ---------------------------------------------------------------------------
-// Выбор набора инструментов по настройкам чата
+// 按聊天设置选择工具集
 // ---------------------------------------------------------------------------
 
 function pickTools(settings) {
@@ -147,13 +146,13 @@ function pickTools(settings) {
 }
 
 // ---------------------------------------------------------------------------
-// Один раунд: подготовить payload -> отправить в Qwen -> собрать стрим
+// 单个轮次：准备 payload -> 发给 Qwen -> 收集流
 // ---------------------------------------------------------------------------
 
 async function requestRound(body, chat, emit) {
-  // Без chatId preparePublicPayload создаёт НОВЫЙ upstream-тред и отправляет
-  // полную историю первым сообщением (currentOnly=false). С chatId — только
-  // текущее сообщение: тред уже хранит предыдущие ходы.
+  // 没有 chatId 时 preparePublicPayload 会新建一个上游会话，并把
+  // 完整历史作为首条消息发出（currentOnly=false）。有 chatId 时只发
+  // 当前消息：该会话已经保留了之前的轮次。
   const prepared = await chatAdapter.preparePublicPayload(body, {
     chatId: chat.qwenChatId || undefined,
   });
@@ -169,15 +168,15 @@ async function requestRound(body, chat, emit) {
 }
 
 // ---------------------------------------------------------------------------
-// Основной цикл
+// 主循环
 // ---------------------------------------------------------------------------
 
 /**
- * Выполнить один пользовательский ход.
- * @param {Object} chat - чат из хранилища (мутирует messages и qwenChatId)
+ * 执行一次用户回合。
+ * @param {Object} chat - 存储中的聊天对象（会改写 messages 和 qwenChatId）
  * @param {string} userText
- * @param {(ev:Object)=>void} emit - отправка события клиенту
- * @returns {Promise<Object>} финальное ассистент-сообщение
+ * @param {(ev:Object)=>void} emit - 向客户端发送事件
+ * @returns {Promise<Object>} 最终的 assistant 消息
  */
 async function runTurn(chat, userText, emit) {
   const settings = chat.settings || {};
@@ -209,8 +208,8 @@ async function runTurn(chat, userText, emit) {
         const acc = accountStore.current();
         if (acc) captchaResolver.solveCaptcha(acc.id);
       }
-      // Тред умер, не выдав ни одного кадра: сбрасываем qwenChatId и один раз
-      // повторяем раунд на свежем треде (полная история уйдёт автоматически).
+      // 会话一帧都没吐就死了：清空 qwenChatId，并在全新会话上
+      // 重试一次该轮次（完整历史会自动带上）。
       const deadThread = /^Qwen upstream closed without a usable response \(frames=0/.test(err.message);
       if (!deadThread || !chat.qwenChatId) throw err;
       logger.warn('Qwen thread died without output, retrying on a fresh thread', 'AGENT');
@@ -219,21 +218,21 @@ async function runTurn(chat, userText, emit) {
     }
 
     if (result.toolCalls.length === 0) {
-      const content = result.content.trim() ? result.content : '(пустой ответ)';
+      const content = result.content.trim() ? result.content : '(空回复)';
       const finalAssistant = { role: 'assistant', content };
       if (result.reasoning) finalAssistant.reasoning_content = result.reasoning;
       chat.messages.push(finalAssistant);
       return finalAssistant;
     }
 
-    // Воспроизводим tool_calls как ассистент-сообщение для истории
+    // 把 tool_calls 作为 assistant 消息回放到历史中
     chat.messages.push({
       role: 'assistant',
       content: result.content || null,
       tool_calls: result.toolCalls.map((tc, i) => ({ ...tc, index: i })),
     });
 
-    // Исполняем инструменты
+    // 执行工具
     for (const call of result.toolCalls) {
       const name = call.function.name;
       let args = {};
@@ -254,7 +253,7 @@ async function runTurn(chat, userText, emit) {
     }
   }
 
-  const fallback = { role: 'assistant', content: '(достигнут лимит ходов, остановлено)' };
+  const fallback = { role: 'assistant', content: '(达到步数上限，已停止)' };
   chat.messages.push(fallback);
   return fallback;
 }

@@ -9,8 +9,8 @@ const toolExecutor = require('./tool-executor');
 const { logger } = require('./util');
 
 /**
- * Веб-приложение чата: статика + REST API + потоковая отправка сообщений (SSE).
- * Монтируется на тот же Express-сервер, что и /v1-прокси.
+ * 聊天 Web 应用：静态资源 + REST API + 流式消息下发（SSE）。
+ * 挂载在与 /v1 代理同一个 Express 服务器上。
  */
 
 function attachWeb(app) {
@@ -27,7 +27,7 @@ function attachWeb(app) {
   app.post('/api/chats', (req, res) => {
     const body = req.body || {};
     const chat = chatStore.create({
-      title: body.title || 'Новый чат',
+      title: body.title || '新会话',
       model: body.model || config.DEFAULT_MODEL,
       settings: body.settings || {},
     });
@@ -106,8 +106,8 @@ function attachWeb(app) {
         const firstUser = chat.messages.find((m) => m.role === 'user');
         const title = firstUser
           ? String(firstUser.content).slice(0, 42).replace(/\s+/g, ' ').trim()
-          : 'Новый чат';
-        if (chat.title === 'Новый чат' && title) chat.title = title;
+          : '新会话';
+        if (chat.title === '新会话' && title) chat.title = title;
         chatStore.save(chat);
       }
       emit({ type: 'done', content: finalAssistant.content });

@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
-# Останавливает фоновый сервер.
+# 停止后台服务器。
 pkill -f "node server.js" 2>/dev/null || true
 echo "stopped"

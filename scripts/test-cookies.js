@@ -2,9 +2,9 @@
 'use strict';
 
 /**
- * test-cookies.js — автономный тест генерации SSXMOD cookies.
- * Убеждается, что алгоритм LZW+custom-base64 выдаёт валидные значения
- * (другой формат, стабильный префикс '1-', декодируется обратно).
+ * test-cookies.js —— SSXMOD cookie 生成的独立测试。
+ * 验证 LZW + 自定义 base64 算法输出合法值
+ * （格式正确、前缀稳定为 '1-'、可反向解码）。
  */
 const { generateCookies } = require('../src/cookie-generator');
 const { generateFingerprint } = require('../src/fingerprint');
