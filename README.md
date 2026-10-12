@@ -93,6 +93,29 @@ npm run login -- --manual
 
 ---
 
+## 自动注册账号（号池扩容）
+
+免费档**每个号每天只有 20 次对话**（`qwen3.8-max`），想多跑就得攒号。`scripts/auto-register.js` 全自动干这事：
+
+```bash
+node scripts/auto-register.js            # 注册 1 个号
+node scripts/auto-register.js --num=5    # 串行注册 5 个号
+```
+
+流程：申请 215.im 临时邮箱 → 开 Chrome 填邮箱 → 轮询收验证码 → 填 6 格 OTP → 抓 token + cookie → 落进 `config/accounts/reg-N.json`。
+
+**前置条件：**
+
+- `.env` 里要有 `YYDS_API_KEY`（`AC-` 开头的 215.im key）。
+- `PLAYWRIGHT_CHANNEL=chrome`（借用本机 Chrome）。
+- 浏览器是 **headed** 的，跑的时候别关窗口 —— 弹出 Cloudflare 滑块要你手动过，脚本会响喇叭提醒。
+
+### 🔴 账号 id 不会覆盖
+
+账号 id 永远是 `reg-N`，**N 从现有号池里最大的 `reg-N` + 1 开始续**。池子里已有 `reg-1..reg-5` 时，再跑 `--num=3` 会得到 `reg-6/7/8`，不会覆盖旧号。某个号注册失败也会占掉那个编号，下次接着往下走。
+
+---
+
 ## 启动
 
 ```bash
@@ -240,6 +263,7 @@ opencode run --model qwen/qwen3.8-max "解释这段代码"
 ```bash
 npm start                     # 起服务
 node scripts/capture-login.js # 抓登录态（推荐）
+node scripts/auto-register.js --num=5  # 自动注册新号进池（不覆盖旧号）
 npm run login                 # 原版登录（易踩 localStorage 坑）
 npm run login -- --manual     # 手动贴 JWT
 npm run accounts              # 多账号管理面板
@@ -286,6 +310,14 @@ npm test
 
 这是**上游自己发的配额文案**，不是代理造的。免费档有每日对话次数上限，刷爆了当天就没得用，等第二天。
 
+实测（2026-10-12）：
+
+- 每个免费号每个模型每天 **20 次**对话（`qwen3.8-max`）。
+- 配额是**按模型算的**，不是按账号 —— 同一账号的 `qwen3.8-max` 打光了，其余 6 个模型还能正常用。
+- 这个文案是**正文内容**，HTTP 状态还是 200，所以代理不会自动切换到下一个账号（它看起来就像一次成功的回答）。
+- 打光的号**不会废**，第二天照常能用 —— 目前没出现过配额耗尽导致账号报废的情况。
+- 想多跑就攒号：`node scripts/auto-register.js --num=5`。
+
 **`frames=0, choices=0`**
 
 上游一帧都不给。常见原因：WAF token 预算超了（一次读的文件太大）、或者账号被风控了。
@@ -313,6 +345,11 @@ token 过期或 WAF。先 `capture-login.js` 重登。
 - `probe-local.js` —— 打本地代理，看 OpenAI 格式返回。`node scripts/probes/probe-local.js [stream|nonstream]`
 - `probe-content.js` —— 专查 content / reasoning_content 里有没有凭空多出换行。
 - `probe-models.js` —— 逐个模型发一句话，看哪些能用、哪些被限流。
+- `probe-all-models.js` —— 一账号 × 7 模型各打一发，验证配额是按模型还是按账号算。
+- `probe-quota.js` —— 受控实验，区分「WAF 风控」和「每日配额」这两种不同的失败。
+- `probe-renew.js` —— 用 cookie 里的 refresh_token 单独验证换发链路。
+- `probe-credits.js` / `probe-credits2.js` —— 探积分 / 会员额度接口（未打通，留档）。
+- `monitor-account.js` —— 定时探测账号状态，只在状态变化时打印，用来观察 WAF 冷却与配额恢复时点。
 
 ⚠️ 这些会真发请求。**别连着刷**，会触发 WAF 验证码。
 
@@ -336,6 +373,7 @@ src/web.js                   # 网页端 REST API
 src/account-store.js         # 账号 token / cookie 管理
 src/ssxmod-manager.js        # SSXMOD cookie 生成与轮换
 scripts/capture-login.js     # 稳健版登录抓取（推荐）
+scripts/auto-register.js     # 自动注册新号进池（reg-N 续号，不覆盖）
 scripts/login.js             # 原版登录
 scripts/list-models.js       # 刷新模型清单
 scripts/test-token.js        # token 续期测试

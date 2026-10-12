@@ -10,6 +10,8 @@ config/chats/*.json
 config/opencode-sessions.json
 config/browser-profile/
 .chrome-profile/
+.chrome-profile-*/
+.acl-repair/
 qwen-workspace/
 
 # Logs, test output and local tooling
