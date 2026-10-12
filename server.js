@@ -188,17 +188,34 @@ app.post('/v1/chat/completions', async (req, res) => {
           toolParser: prepared.hasTools ? tools.createToolCallStreamParser() : null,
         });
       } catch (err) {
-        // A stale Qwen thread can accept the request and then close its SSE
-        // stream without emitting a completion. Retry once on a fresh thread,
-        // including for non-stream OpenAI clients.
-        if (/^Qwen upstream closed without a usable response/i.test(err.message)) {
+        // 三种要换号重试的情况：
+        //   1. 上游悄悄关流（陈旧 Qwen 线程）；
+        //   2. 免费档额度打光（DailyQuotaExhausted / RateLimited）——
+        //      这是正文文案伪装成的正常回复，必须换号重发，否则客户端收到
+        //      「今日已达上限」还以为是答案。
+        // 重试时按「该模型今天还有额度」挑号，打光的号会被 candidates(model) 排掉。
+        const retryable = /^Qwen upstream closed without a usable response/i.test(err.message)
+          || /DailyQuotaExhausted|RateLimited/i.test(err.message);
+        if (retryable) {
+          if (/DailyQuotaExhausted|RateLimited/i.test(err.message)) {
+            accountStore.markExhausted(response.account, prepared.model);
+          }
           sessionStore.clear(sessionKey);
-          for (let attempt = 0; attempt < 3; attempt += 1) {
-            const retryPrepared = await chatAdapter.preparePublicPayload(effectiveBody, { compaction });
-            const retry = await qwenClient.sendChatRequest(retryPrepared.qwenPayload);
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            const nextAccount = accountStore
+              .candidates(prepared.model)
+              .find((a) => a.id !== (response.account && response.account.id)) || preferredAccount;
+            const retryPrepared = await chatAdapter.preparePublicPayload(effectiveBody, {
+              chatId: null,
+              compaction,
+              sessionKey,
+              headers: req.headers,
+              account: nextAccount,
+            });
+            const retry = await qwenClient.sendChatRequest(retryPrepared.qwenPayload, nextAccount);
             if (!retry.status) continue;
             sessionStore.set(sessionKey, retryPrepared.chatId, {
-              accountId: retry.account ? retry.account.id : preferredAccount.id,
+              accountId: retry.account ? retry.account.id : nextAccount.id,
               awaitingCompactedHistory: compaction,
               toolPromptHash: retryPrepared.toolPromptHash,
               history: sessionStore.checkpointMessages(restoredMessages),
@@ -226,18 +243,27 @@ app.post('/v1/chat/completions', async (req, res) => {
       requireToolCall: prepared.isContinuation || effectiveBody.tool_choice === 'required',
       maxEmptyRetries: 3,
       onError: (error) => {
-        accountStore.markFailure(response.account, error.message);
-        if (error.message && error.message.includes('WAF_CAPTCHA_CHALLENGE')) {
-          const parts = error.message.split('WAF_CAPTCHA_CHALLENGE:');
+        // 额度类错误：把号标成今天打光，下次 candidates() 直接绕开它
+        const message = (error && error.message) || '';
+        if (/RateLimited|DailyQuotaExhausted/i.test(message)) {
+          accountStore.markExhausted(response.account, prepared.model);
+        }
+        accountStore.markFailure(response.account, message);
+        if (message && message.includes('WAF_CAPTCHA_CHALLENGE')) {
+          const parts = message.split('WAF_CAPTCHA_CHALLENGE:');
           const captchaUrl = parts[1] || '';
           captchaResolver.solveCaptcha(response.account.id, captchaUrl);
         }
       },
       retryEmpty: async () => {
         sessionStore.clear(sessionKey);
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          const nextAccount = accountStore.candidates()[0] || preferredAccount;
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          // 按「该模型今天还有额度」挑下一个号；打光的号会被 candidates(model) 排掉
+          const nextAccount = accountStore
+            .candidates(prepared.model)
+            .find((a) => a.id !== (response.account && response.account.id)) || preferredAccount;
           const retryPrepared = await chatAdapter.preparePublicPayload(effectiveBody, {
+            chatId: null,
             compaction,
             sessionKey,
             headers: req.headers,

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>号池状态 · Qwen 代理</title>
+    <link rel="stylesheet" href="/pool.css" />
+  </head>
+  <body>
+    <div class="pool-wrap">
+      <header class="pool-head">
+        <div class="titles">
+          <h1>号池状态</h1>
+          <p class="sub" id="sub">正在读取号池…</p>
+        </div>
+        <div class="head-tools">
+          <span class="dot" id="live-dot" title="自动刷新中"></span>
+          <span class="refresh-note" id="refresh-note">每 5 秒刷新</span>
+          <a class="btn-link" href="/">返回聊天</a>
+        </div>
+      </header>
+
+      <section class="cards" id="cards">
+        <div class="card"><span class="k">号池总数</span><b class="v" id="c-total">–</b><span class="hint" id="c-total-hint"></span></div>
+        <div class="card"><span class="k">可用号</span><b class="v ok" id="c-available">–</b><span class="hint" id="c-available-hint"></span></div>
+        <div class="card"><span class="k">今日已用</span><b class="v" id="c-used">–</b><span class="hint" id="c-used-hint"></span></div>
+        <div class="card"><span class="k">打光 / 冷却</span><b class="v warn" id="c-dead">–</b><span class="hint" id="c-dead-hint"></span></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>按模型看配额</h2>
+          <span class="panel-note">每号每模型每天 <b id="limit-note">20</b> 次，按北京时间零点重置</span>
+        </div>
+        <div id="models" class="model-rows"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>账号明细 <span class="count" id="acct-count"></span></h2>
+          <div class="filters">
+            <input id="filter" type="search" placeholder="按 ID / 邮箱搜…" autocomplete="off" />
+            <label class="chk"><input id="only-used" type="checkbox" />只看今天用过的</label>
+            <label class="chk"><input id="only-bad" type="checkbox" />只看打光/冷却/异常</label>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th class="col-id">账号</th>
+                <th>状态</th>
+                <th class="col-num">今日</th>
+                <th>各模型用量</th>
+                <th class="col-time">最近使用</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <p class="empty" id="empty" hidden>号池是空的 —— 先用 <code>node scripts/auto-register.js --num=5</code> 注册几个号。</p>
+        </div>
+      </section>
+
+      <footer class="foot">
+        <span>轮询策略：<b>先用当天用得最少的号</b>，打光或报错自动换下一个（最多重试 5 次）。</span>
+        <span id="updated" class="updated"></span>
+      </footer>
+    </div>
+
+    <script src="/pool.js" defer></script>
+  </body>
+</html>

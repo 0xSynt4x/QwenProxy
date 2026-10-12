@@ -4,7 +4,10 @@ const path = require('path');
 const fs = require('fs');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const CONFIG_DIR = path.join(PROJECT_ROOT, 'config');
+// 账号目录可被 QWEN_CONFIG_DIR 覆盖（测试要跑在临时目录里，不碰真号池）
+const CONFIG_DIR = process.env.QWEN_CONFIG_DIR
+  ? path.resolve(process.env.QWEN_CONFIG_DIR)
+  : path.join(PROJECT_ROOT, 'config');
 const ACCOUNT_FILE = path.join(CONFIG_DIR, 'account.json');
 const ACCOUNTS_DIR = path.join(CONFIG_DIR, 'accounts');
 const CACHE_FILE = path.join(CONFIG_DIR, 'models-cache.json');

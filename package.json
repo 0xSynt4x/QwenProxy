@@ -10,7 +10,7 @@
     "capture": "node scripts/capture-login.js",
     "accounts": "node scripts/accounts.js",
     "install:setup": "node scripts/install.js",
-    "test": "node scripts/test-cookies.js && node scripts/test-token.js && node scripts/offline-sse-test.js && node scripts/offline-tool-loop-test.js",
+    "test": "node scripts/test-cookies.js && node scripts/test-token.js && node scripts/offline-sse-test.js && node scripts/offline-tool-loop-test.js && node tests/daily-quota-test.js && node tests/pool-status-test.js",
     "models": "node scripts/list-models.js"
   },
   "dependencies": {

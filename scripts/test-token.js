@@ -15,9 +15,15 @@
  */
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+// 🔴 账号目录必须在 require 之前指到临时目录：config.js 加载时就快照了
+// ACCOUNTS_DIR。setToken 会真落盘，不隔离就会污染真号池。
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qp-token-test-'));
+process.env.QWEN_CONFIG_DIR = tmpDir;
 const tokenManager = require('../src/token-manager');
 const accountStore = require('../src/account-store');
+const accountsDir = require('../src/config').ACCOUNTS_DIR;
 
 /** 造一个假的 JWT（只有 payload 有意义，签名随便）。 */
 function makeJwt(payload) {
@@ -106,10 +112,12 @@ check('顶层 token 与 cookie 里的 token 保持一致', () => {
     assert.strictEqual(account.token, 'new-token');
     assert.strictEqual(account.cookie.find((c) => c.name === 'token').value, 'new-token');
     assert.strictEqual(account.cookie.find((c) => c.name === 'x').value, 'y', '其它 cookie 不应被改动');
+    // 顺便验证双写是真的落了盘
+    const saved = JSON.parse(fs.readFileSync(path.join(accountsDir, 'test-account.json'), 'utf8'));
+    assert.strictEqual(saved.token, 'new-token', '落盘的顶层 token 也要更新');
+    assert.strictEqual(saved.cookie.find((c) => c.name === 'token').value, 'new-token', '落盘的 cookie 也要更新');
   } finally {
-    // setToken 会真落盘，测试完必须清掉，别污染 config/accounts/
-    const file = path.join(__dirname, '..', 'config', 'accounts', 'test-account.json');
-    if (fs.existsSync(file)) fs.unlinkSync(file);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 

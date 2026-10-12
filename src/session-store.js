@@ -5,6 +5,7 @@ const path = require('path');
 const config = require('./config');
 
 const FILE = path.join(config.CONFIG_DIR, 'opencode-sessions.json');
+
 let sessions = new Map();
 
 function load() {

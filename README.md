@@ -99,10 +99,11 @@ npm run login -- --manual
 
 ```bash
 node scripts/auto-register.js            # 注册 1 个号
-node scripts/auto-register.js --num=5    # 串行注册 5 个号
+node scripts/auto-register.js --num=5    # 并发注册 5 个号（默认间隔 5s 错峰）
+node scripts/auto-register.js --num=10 --delay=8000  # 风控严时加大间隔
 ```
 
-流程：申请 215.im 临时邮箱 → 开 Chrome 填邮箱 → 轮询收验证码 → 填 6 格 OTP → 抓 token + cookie → 落进 `config/accounts/reg-N.json`。
+流程：申请 215.im 临时邮箱 → 开 Chrome 填邮箱 → 轮询收验证码 → 填 6 格 OTP → 抓 token + cookie → 调 `/api/v1/auths/` 验证（不耗配额）→ 落进 `config/accounts/reg-N.json`。每次运行日志记到 `logs/auto-register-<时间戳>.log`，失败编号重跑 `--num` 补齐即可。
 
 **前置条件：**
 

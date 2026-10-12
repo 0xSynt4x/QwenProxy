@@ -208,10 +208,36 @@ async function handleCommand(messages, sessionKey, req, res) {
       const rows = list.map((a) => {
         const activeMarker = a.active ? ' 👈 *(Active)*' : '';
         const availMarker = a.available ? '🟢' : '🔴 (Cooling down)';
-        return `- ${availMarker} **${a.id}** (\`${a.email}\`)${activeMarker}`;
+        const d = a.daily || { counts: {}, exhausted: {} };
+        const used = Number(d.counts?._total || 0);
+        const usedMarker = used > 0 ? ` · 今天 ${used}/${accountStore.DAILY_LIMIT} 次` : '';
+        return `- ${availMarker} **${a.id}** (\`${a.email}\`)${activeMarker}${usedMarker}`;
       });
       responseText = `👥 **Configured Qwen Accounts (${list.length})**\n\n` + rows.join('\n') +
         `\n\n*Use \`$account switch <email|id>\`, \`$account add <token>\`, or \`$account remove <id>\`.*`;
+    }
+  } else if (cmd === 'usage' || cmd === 'quota') {
+    // 当天用量排行：按每个号今天被打的次数降序，打光的标出来。
+    const snap = accountStore.usageSnapshot();
+    if (!snap.length) {
+      responseText = `📈 **Today's Account Usage (${accountStore.beijingDateKey()})**\n\n号池是空的，先跑 \`node scripts/auto-register.js --num=5\` 或 \`$account add <token>\` 补号。`;
+    } else {
+      const limit = accountStore.DAILY_LIMIT;
+      const totalUsed = snap.reduce((sum, a) => sum + a.used, 0);
+      const lines = snap.map((a) => {
+        const markers = [];
+        if (a.active) markers.push('👈当前');
+        // 打光看 exhausted 映射（拿到明天零点的时间戳），不是只靠用量到顶：
+        // 报错触发的「提前打光」用量远不到 20 也要标出来。
+        if (Object.keys(a.exhausted || {}).length) markers.push('🔴已打光');
+        else if (a.used >= limit * 0.8) markers.push('🟡快满');
+        const tag = markers.length ? ` (${markers.join(' ')})` : '';
+        return `- **${a.id}** (\`${a.email}\`): 今天 ${a.used}/${limit} 次${tag}\n  明细: ${a.summary}`;
+      });
+      responseText = `📈 **今天账号用量排行（${snap[0].date}，单号单模型上限 ${limit}）**\n\n` +
+        lines.join('\n') +
+        `\n\n合计 ${totalUsed} 次 / ${snap.length * limit} 次配额。\n` +
+        `*轮询会自动挑今天用得最少的号；打光的号会自动标 🔴 并跳过，次日零点恢复。*`;
     }
   } else if (cmd === 'ping') {
     const list = accountStore.list();
@@ -293,6 +319,7 @@ async function handleCommand(messages, sessionKey, req, res) {
       `- \`$qwen-api account switch <id|email>\` — Switch active Qwen account.\n` +
       `- \`$qwen-api ping\` / \`test\` — Test all accounts for valid auth & connectivity.\n` +
       `- \`$qwen-api stats\` — View proxy uptime, total requests, and token statistics.\n` +
+      `- \`$qwen-api usage\` / \`quota\` — 今天各账号的用量排行与打光状态。\n` +
       `- \`$qwen-api history\` — Show turn breakdown timeline for current session.\n` +
       `- \`$qwen-api search <query>\` — Search qwen-memo memory checkpoints.\n` +
       `- \`$qwen-api export\` — Export current session context log to markdown file.\n` +

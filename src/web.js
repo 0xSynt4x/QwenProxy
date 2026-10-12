@@ -6,6 +6,8 @@ const config = require('./config');
 const chatStore = require('./chat-store');
 const agent = require('./agent');
 const toolExecutor = require('./tool-executor');
+const accountStore = require('./account-store');
+const { buildPoolStatus } = require('./pool-status');
 const { logger } = require('./util');
 
 /**
@@ -17,6 +19,7 @@ function attachWeb(app) {
   const publicDir = path.join(config.PROJECT_ROOT, 'public');
 
   // ---------- Static ----------
+  // 号池看板是独立单页（/pool.html），不走聊天 SPA 的路由，直接静态托管。
   app.use(express.static(publicDir));
 
   // ---------- API: chats ----------
@@ -65,6 +68,24 @@ function attachWeb(app) {
   // ---------- API: config ----------
   app.get('/api/models', (req, res) => {
     res.json({ models: config.MODELS, default: config.DEFAULT_MODEL });
+  });
+
+  // ---------- API: 号池状态（给 /pool.html 看板用） ----------
+  // 号池几百个时不能靠肉眼翻 config/accounts/*.json，这里汇总成一张表：
+  // 每个号当天各模型打了多少、谁打光了、谁在冷却、整体还剩多少配额。
+  app.get('/api/pool', (req, res) => {
+    try {
+      const status = buildPoolStatus(
+        accountStore.list(),
+        config.MODELS,
+        accountStore.DAILY_LIMIT,
+        Date.now(),
+      );
+      res.json(status);
+    } catch (err) {
+      logger.error(`[pool status] ${err.message}`, 'WEB', err);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.get('/api/workspace', (req, res) => {

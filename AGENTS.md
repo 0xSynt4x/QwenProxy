@@ -203,18 +203,45 @@ OpenCode 里常用的：
 
 ### 每日配额（免费档）
 
-- 每个号每个模型每天 **20 次**对话。
+- 每个号每个模型每天 **20 次**对话（`QWEN_DAILY_LIMIT` 可调，默认 20）。
 - 配额**按模型算**，不是按账号 —— 一个号的 `qwen3.8-max` 打光了，同账号其余模型照样能用。
-- 配额耗尽的返回是**正文文案 + HTTP 200**，代理看不出来这是失败，**不会自动切号**。要切得自己在客户端换模型或等次日。
+- 代理**记账**：每次真正被上游接受的请求，会在 `config/accounts/*.json` 的 `daily.counts` 里按模型 +1，`daily.counts._total` 记当天总次数。按北京时间（UTC+8）跨天自动归零。
+- 代理**认得出打光**：上游那句「今日对话次数已达上限，请明日再来。」是**正文文案 + HTTP 200**，代理在 SSE 前 48 个字里做配额闸门识别，命中就抛 `DailyQuotaExhausted`，把这个号在 `daily.exhausted[model]` 里标成明天零点解封，然后**自动换号重试**（流式 / 非流式都覆盖，最多换 5 次）。
+- 候选号排序 = 当天用量升序 + `lastUsedAt` 升序，**雨露均沾**，不再死磕 `activeId` 那个号；`activeId` 只在还有额度时排首位（保持会话-账号绑定的粘性）。全打光时退回所有有 token 的号，不硬失败。
 - 打光的号**不会废**，次日自动恢复。目前没出现过配额导致账号报废的情况。
+- `$qwen-api usage`（或 `quota`）看当天各号用量排行；`$qwen-api accounts` 每行也带「今天 N/20 次」。
+
+### 号池看板（网页）
+
+```bash
+npm start            # 然后打开 http://localhost:3265/pool.html
+```
+
+- 数据源 `GET /api/pool`，页面**每 5 秒自动刷新**（切后台停轮询，回来立刻补一次），纯静态单页，不依赖构建。
+- 看四样东西：汇总卡（总数 / 可用号 / 今日已用 / 打光与冷却）、**按模型的配额条**（已用 / 总容量 / 百分比 / 已打光号数）、账号明细表（搜索 + 按「今天用过 / 有异常」过滤，正在用的号置顶高亮，每个号的各模型用量做成小标签，满 20 次的标黄、被显式打光的标红）、底部轮询策略说明。
+- 状态判定的优先级：无登录态 `off` > 冷却中 `cooling` > 已打光 `exhausted`（显式 exhausted 标记或自然满 20 次都算）> 正在用 `active` > 待命 `idle`。**可用号 = 有 token 且不在冷却且今天还有额度。**
+- 汇总逻辑在 `src/pool-status.js`（纯函数，直接喂 `accountStore.list()` 的输出），路由在 `src/web.js` 的 `/api/pool`，页面三件套在 `public/pool.{html,css,js}`。改看板字段先改 `pool-status.js` 再改页面，顺带补 `tests/pool-status-test.js`。
 
 ### 自动注册（号池扩容）
 
 ```bash
-node scripts/auto-register.js --num=5
+node scripts/auto-register.js --num=5                  # 默认并发 3 个窗口，间隔 5s 错峰
+node scripts/auto-register.js --num=10 --concurrency=5 # 一次开 5 个窗口
+node scripts/auto-register.js --num=3 --serial         # 退回老的一船一个
+node scripts/auto-register.js --num=10 --delay=8000    # 风控严时加大间隔
+node scripts/auto-register.js --num=3 --no-validate    # 跳过注册后 token 验证
 ```
 
-账号 id 是 `reg-N`，**N 从现有号池最大编号 + 1 续**，绝不覆盖已有账号。需要 `.env` 里的 `YYDS_API_KEY` 和 `PLAYWRIGHT_CHANNEL=chrome`。浏览器是 headed 的，弹 Cloudflare 滑块要人工过。
+- 账号 id 是 `reg-N`，**N 从现有号池最大编号 + 1 续**，绝不覆盖已有账号。需要 `.env` 里的 `YYDS_API_KEY` 和 `PLAYWRIGHT_CHANNEL=chrome`。
+- 浏览器是 headed 的，弹 Cloudflare 滑块**必须人工过**（行为式人机校验，服务端过不了，没有自动解码）。并发窗口就是为「一次全点完」设计的。
+- 并发窗口视口固定 **640×480**（够填邮箱 + 验证码），并按 `slot % 3` / `slot / 3` **平铺错开放**，不会互相压成一个。
+- 注册成功后自动打一发 `GET /api/v1/auths/` 验证 token（**不耗每天 20 次对话配额**），坏号当场在 `lastError` 里标记，不会混进可用计数。
+- 每次运行落盘到 `logs/auto-register-<时间戳>.log`（控制台同步打印，尾部有 JSON 汇总 + 失败编号）。失败的 `reg-N` 编号已占住，直接重跑 `--num=<失败数>` 补号即可。
+- 环境变量：`AUTO_REGISTER_CONCURRENCY`（默认 3）、`AUTO_REGISTER_DELAY_MS`（默认 5000）、`AUTO_REGISTER_VALIDATE=0`（关验证）、`AUTO_REGISTER_SERIAL=1`（切串行）、`PLAYWRIGHT_CHANNEL=chrome`。
+
+### 测试与目录隔离
+
+- 所有会落盘的测试（`test-token.js` / `offline-sse-test.js` / `tests/daily-quota-test.js`）都在 require 之前设 `QWEN_CONFIG_DIR=<临时目录>`，把 `config/accounts/`、session 文件全指去别处。🔴 `config.js` 加载时就快照路径，**晚一步设就晚了**。
 
 ---
 
@@ -234,7 +261,9 @@ node scripts/auto-register.js --num=5
 ## 测试
 
 ```bash
-npm test                                   # 四组离线测试全跑
+npm test                                   # 六组离线测试全跑
+node tests/daily-quota-test.js             # 只跑号池记账 / 额度识别
+node tests/pool-status-test.js             # 只跑号池看板汇总
 node scripts/offline-tool-loop-test.js     # 只跑工具循环
 ```
 
@@ -253,6 +282,8 @@ node scripts/offline-tool-loop-test.js     # 只跑工具循环
 - `src/tool-memo.js` —— 每会话工具结果记忆（`memo_recall`）
 - `src/session-store.js` —— 跨轮次的 chatId + accountId 持久化
 - `src/account-store.js` —— 多账号轮换与健康跟踪
+- `src/pool-status.js` —— 号池看板汇总（纯函数，喂 accountStore.list() 输出）
+- `src/web.js` —— 静态页 + REST API（含 `/api/pool`）
 - `src/qwen-client.js` —— SSXMOD cookie 生成 + 上游 HTTP
 - `src/config.js` —— 所有可调限制（`AGENT_HISTORY_MAX_CHARS` 等）
 - `scripts/offline-sse-test.js` —— SSE 适配单元测试

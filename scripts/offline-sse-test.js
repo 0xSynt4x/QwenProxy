@@ -5,6 +5,14 @@
  * offline-sse-test.js —— 按 0.2.83 的真实格式测试 Qwen SSE -> OpenAI 转换。
  */
 const { Readable } = require('stream');
+// 🔴 会话/账号落盘目录必须在 require 之前指到临时目录：config.js 加载时就快照了
+// 路径，晚一步设就晚了。否则这个离线测试会去写生产的
+// config/opencode-sessions.json / config/accounts/。
+const os = require('os');
+const path = require('path');
+const fsTmp = require('fs');
+const tmpConfigDir = fsTmp.mkdtempSync(path.join(os.tmpdir(), 'qp-sse-test-'));
+process.env.QWEN_CONFIG_DIR = tmpConfigDir;
 const { parseQwenSSE, collectNonStream, preparePublicPayload } = require('../src/chat-adapter');
 const { buildChatBody } = require('../src/chat-adapter');
 const sessionStore = require('../src/session-store');

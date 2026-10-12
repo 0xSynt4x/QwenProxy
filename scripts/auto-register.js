@@ -14,8 +14,10 @@
  *
  * 用法：
  *   node scripts/auto-register.js            # 跑 1 个号
- *   node scripts/auto-register.js --num=3    # 跑 3 个号（串行）
+ *   node scripts/auto-register.js --num=3    # 跑 3 个号（并发，默认间隔 5s 错峰）
  *   node scripts/auto-register.js --num=1 --email-prefix=hn
+ *   node scripts/auto-register.js --num=10 --concurrency=5 --delay=8000
+ *   node scripts/auto-register.js --num=3 --no-validate   # 跳过注册后验证
  *
  * 账号 id：永远是 reg-N，N 从「现有号池里最大的 reg-N + 1」开始续，
  *         不会覆盖已有账号（跑完池子里会多出 reg-6、reg-7 ...）。
@@ -28,8 +30,29 @@
 require('dotenv').config();
 
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 const accountStore = require('../src/account-store');
 const config = require('../src/config');
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 注册后验证：拿刚抓到的 token 打一发 GET /api/v1/auths/。
+ * 200 = token 真能用；401/403 = 坏号；其它 = 上游抖动。
+ * 注意：这个接口不进对话配额，随便打不耗每天 20 次。
+ */
+async function validateToken(token) {
+  const { data, status } = await axios.get(`${config.BASE_URL}/api/v1/auths/`, {
+    headers: { authorization: `Bearer ${token}`, 'user-agent': config.USER_AGENT },
+    timeout: 20000,
+    proxy: false,
+    validateStatus: () => true,
+  });
+  if (status === 200) return { ok: true, email: (data && (data.email || data.username)) || '' };
+  if (status === 401 || status === 403) return { ok: false, reason: `auth rejected (HTTP ${status})` };
+  return { ok: false, reason: `unexpected HTTP ${status}: ${JSON.stringify(data).slice(0, 120)}` };
+}
 
 // ============================================================================
 // 参数解析
@@ -40,8 +63,57 @@ const num = Number(
     process.env.AUTO_REGISTER_COUNT ||
     1
 );
+// 并发几个号同时注册。默认 3 —— Cloudflare 滑块只能人工过，一次多开几个窗口
+// 就能一次性把这一批全点完，比串行快 N 倍。
+const concurrency = Math.max(
+  1,
+  Number(
+    (args.find((a) => a.startsWith('--concurrency=')) || '').split('=')[1] ||
+      process.env.AUTO_REGISTER_CONCURRENCY ||
+      3
+  )
+);
+// 串行模式（跑一个成一个再跑下一个），调试时用
+const serial = args.includes('--serial') || process.env.AUTO_REGISTER_SERIAL === '1';
 const emailPrefix =
   (args.find((a) => a.startsWith('--email-prefix=')) || '').split('=')[1] || 'qwen';
+// 每个号开工前的批次间隔（毫秒），避免 N 个窗口同时砸建箱/发码接口撞 WAF。
+// 默认 5000：并发 3 时三个号错开 0/5/10s 起跑；串行时每两号之间歇这么久。
+const delayMs = Math.max(
+  0,
+  Number(
+    (args.find((a) => a.startsWith('--delay=')) || '').split('=')[1] ||
+      process.env.AUTO_REGISTER_DELAY_MS ||
+      5000
+  )
+);
+// 注册成功后是否打一发 /api/v1/auths/ 验证 token 真能用（不耗每日对话配额）。
+// --no-validate 或 AUTO_REGISTER_VALIDATE=0 可关掉（纯离线调试时用）。
+const validate =
+  !args.includes('--no-validate') && process.env.AUTO_REGISTER_VALIDATE !== '0';
+// 本次运行日志落盘（默认 logs/auto-register-<时间戳>.log），成功/失败逐行记，
+// 方便断点续跑：失败的 reg-N 下次直接 --num 补，不用翻控制台。
+const logFileArg = (args.find((a) => a.startsWith('--log-file=')) || '').split('=')[1] || '';
+
+// 本次运行的日志文件：控制台照常打印，同时逐行落盘，跑完尾部追加 JSON 汇总。
+// 放 logs/ 下，.gitignore 已排除（备份仓库不进日志）。
+const runStamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+const logFile = logFileArg || path.join(config.PROJECT_ROOT, 'logs', `auto-register-${runStamp}.log`);
+let logStream = null;
+function logLine(line = '') {
+  console.log(line);
+  try {
+    if (!logStream) {
+      fs.mkdirSync(path.dirname(logFile), { recursive: true });
+      logStream = fs.createWriteStream(logFile, { flags: 'a' });
+    }
+    logStream.write(`${line}\n`);
+  } catch (_) {}
+}
+
+// 注册窗口视口。640x480 够填邮箱+验证码了，大了几个窗口互相遮成全屏，
+// 人工点 CF 滑块时根本找不着目标窗口。
+const VIEWPORT = { width: 640, height: 480 };
 // ============================================================================
 // 215.im / YYDS Mail 客户端
 // ============================================================================
@@ -262,12 +334,12 @@ function loudAlert(msg) {
   for (let i = 0; i < 5; i += 1) beep();
 }
 
-// 让 waitForVerificationCode 闭包能用最新 mailbox
-let mailboxForWait = null;
+// 并发时每个号认自己的 mailbox：由 registerOne 参数传进去，
+// 不再用共享全局变量（多个号串邮箱就是在等别人的验证码）
 
 // ============================================================================
 // Playwright 注册流程（用 incognito context：共享 browser，独立 cookie/localStorage）
-async function registerOne({ email, accountId }) {
+async function registerOne({ email, accountId, mailbox, slot }) {
   const browser = await getSharedBrowser();
 
   console.log(`  🌐 注册 ${email} (新 incognito context) ...`);
@@ -276,7 +348,7 @@ async function registerOne({ email, accountId }) {
   const ctx = await browser.newContext({
     userAgent: config.USER_AGENT,
     locale: 'en-US',
-    viewport: null,
+    viewport: VIEWPORT,
   });
 
   try {
@@ -286,6 +358,19 @@ async function registerOne({ email, accountId }) {
     });
     // 等表单可交互
     await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
+
+    // 窗口错开放：不要让 N 个 640x480 完全重叠，人工点 CF 滑块时找不到窗口
+    try {
+      const col = slot % 3;
+      const row = Math.floor(slot / 3) % 5;
+      await page.setViewportSize(VIEWPORT);
+      await page.evaluate(
+        ([x, y]) => {
+          try { window.moveTo(x, y); window.resizeTo(640, 480); } catch (_) {}
+        },
+        [col * 660, row * 500]
+      );
+    } catch (_) {}
 
     // 浏览器窗口置顶 + 抢焦点（让人能看到）
     try { await page.bringToFront(); } catch (_) {}
@@ -351,7 +436,7 @@ async function registerOne({ email, accountId }) {
     }
 
     console.log(`  🕐 等验证码（最多 3 分钟）...`);
-    const got = await waitForVerificationCode(mailboxForWait, {
+    const got = await waitForVerificationCode(mailbox, {
       timeoutMs: 180_000,
       onWait: async (elapsedMs) => {
         await detectCf();
@@ -576,47 +661,111 @@ async function closeSharedBrowser() {
   let okCount = 0;
   let failCount = 0;
 
-  for (let i = 1; i <= num; i += 1) {
+  // 全部号的「任务单」——并发模式下窗口是同时开的，先把邮箱/编号都领好，
+  // 再由 worker 池同时消费。串行模式就是同一个池子 limit=1，行为跟以前一致。
+  const jobs = [];
+  for (let i = 0; i < num; i += 1) {
     // accountId 用全局续号（不是 i），失败也要占掉编号，保证不覆盖旧号
     const accountId = `reg-${regIndex}`;
     regIndex += 1;
-    console.log(`\n========== [${i}/${num}] → ${accountId} ==========`);
     // localPart：<prefix>-<accountId>-<rand>，避免 215.im 撞名
     const local = `${emailPrefix}-${accountId.replace(/^reg-/, '')}-${Date.now().toString(36).slice(-4).toLowerCase()}`;
     const domain = YYDS_DOMAIN || pickDomain(domains) || '';
-    const mailbox = await yydsCreateMailbox(local, domain);
-    mailboxForWait = mailbox;
-    console.log(`  📧 临时邮箱: ${mailbox.email}  (id=${mailbox.id || '-'})`);
+    jobs.push({ index: i + 1, accountId, local, domain });
+  }
 
-    try {
-      const result = await registerOne({ email: mailbox.email, accountId });
-      const saved = accountStore.save(
-        {
-          ...result,
-          savedAt: Date.now(),
-          failures: 0,
-          unavailableUntil: 0,
-          lastError: '',
-        },
-        accountId
-      );
-      console.log(`  💾 已保存: [${saved.id}] ${saved.email}  (cookies: ${result.cookie.length})`);
-      console.log(`      文件: config/accounts/${saved.id}.json`);
-      okCount += 1;
-    } catch (e) {
-      console.error(`  ❌ 失败: ${e.message}`);
-      failCount += 1;
-    }
+  const workerCount = serial ? 1 : concurrency;
+  console.log(`\n🚀 开跑：${num} 个号，并发 ${workerCount} 个窗口（--serial 可切串行）`);
 
-    // 号之间歇 3s，避免被 Qwen 风控串连
-    if (i < num) {
-      console.log('  ⏸  歇 3 秒 ...');
-      await new Promise((r) => setTimeout(r, 3000));
+  let nextJob = 0;
+  const results = [];
+  async function worker(workerId) {
+    let doneByMe = 0;
+    while (true) {
+      const myTurn = nextJob++;
+      if (myTurn >= jobs.length) return;
+      const { index: slotNo, accountId, local, domain } = jobs[myTurn];
+      const slot = myTurn; // 窗口平铺位置
+      // 批次间隔：同 worker 的两号之间歇 delayMs；不同 worker 起跑错开 workerId * 2s，
+      // 避免 N 个窗口同时建箱/点发码撞 WAF。串行模式就是 worker=1 的自然间隔。
+      const stagger = doneByMe > 0 ? delayMs : workerId * 2000;
+      if (stagger > 0) {
+        logLine(`  ⏸️  [${accountId}] 歇 ${(stagger / 1000).toFixed(0)}s 再开工（防风控）...`);
+        await sleep(stagger);
+      }
+      doneByMe += 1;
+      let mailbox = null;
+      try {
+        mailbox = await yydsCreateMailbox(local, domain);
+        logLine(`\n========== [${slotNo}/${num}] → ${accountId} ==========`);
+        logLine(`  📧 临时邮箱: ${mailbox.email}  (id=${mailbox.id || '-'})`);
+        const result = await registerOne({
+          email: mailbox.email,
+          accountId,
+          mailbox,
+          slot,
+        });
+        // 注册后验证：坏号当场标出来，不污染号池的可用计数
+        let lastError = '';
+        if (validate) {
+          try {
+            const check = await validateToken(result.token);
+            if (!check.ok) {
+              lastError = `post-register validation failed: ${check.reason}`;
+              logLine(`  ⚠️  验证没过: ${check.reason}（号照常落盘，lastError 已标记）`);
+            } else {
+              logLine(`  🔍 验证通过${check.email ? ` (${check.email})` : ''}`);
+              if (check.email && result.email !== check.email) result.email = check.email;
+            }
+          } catch (e) {
+            lastError = `post-register validation error: ${e.message.slice(0, 120)}`;
+            logLine(`  ⚠️  验证请求失败: ${e.message.slice(0, 120)}（号照常落盘）`);
+          }
+        }
+        const saved = accountStore.save(
+          {
+            ...result,
+            savedAt: Date.now(),
+            failures: lastError ? 1 : 0,
+            unavailableUntil: 0,
+            lastError,
+          },
+          accountId
+        );
+        logLine(`  💾 已保存: [${saved.id}] ${saved.email}  (cookies: ${result.cookie.length})${lastError ? ' ⚠️待查' : ''}`);
+        logLine(`      文件: config/accounts/${saved.id}.json`);
+        results.push({ ok: !lastError, accountId, saved, validationError: lastError || undefined });
+      } catch (e) {
+        logLine(`  ❌ 失败: [${accountId}] ${e.message}`);
+        results.push({ ok: false, accountId, err: String((e && e.message) || e) });
+      }
     }
   }
 
+  // 并发模式：同时最多 workerCount 个号在跑。每个号独立 incognito context
+  // （独立 cookie/localStorage），CF 滑块要人工过时一次性全点完。
+  logLine(`   日志: ${logFile}`);
+  logLine(`   批次间隔: ${delayMs}ms，注册后验证: ${validate ? '开' : '关'}`);
+  await Promise.all(Array.from({ length: Math.min(workerCount, jobs.length) }, (_, i) => worker(i)));
+
+  okCount = results.filter((r) => r.ok).length;
+  failCount = results.length - okCount;
+
+  if (okCount > 1) {
+    logLine('  ℹ️  本批号各自在独立 context / 邮箱里跑，不用额外歇息');
+  }
+
   await closeSharedBrowser();
-  console.log(`\n🏁 收工：成功 ${okCount} / 失败 ${failCount} / 共 ${num}`);
+  logLine(`\n🏁 收工：成功 ${okCount} / 失败 ${failCount} / 共 ${num}`);
+  const failedIds = results.filter((r) => !r.ok).map((r) => r.accountId);
+  if (failedIds.length) {
+    logLine(`   失败编号: ${failedIds.join(', ')}（编号已占住，直接重跑 --num=${failedIds.length} 补号即可）`);
+  }
+  try {
+    if (!logStream) fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    fs.appendFileSync(logFile, `\nSUMMARY ${JSON.stringify({ stamp: runStamp, ok: okCount, fail: failCount, total: num, failedIds, results: results.map((r) => ({ accountId: r.accountId, ok: r.ok, err: r.err || r.validationError || undefined })) })}\n`);
+    if (logStream) logStream.end();
+  } catch (_) {}
   process.exit(failCount > 0 ? 1 : 0);
 })().catch((e) => {
   console.error('FATAL:', e.stack || e.message);

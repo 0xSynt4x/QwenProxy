@@ -420,6 +420,22 @@ async function preparePublicPayload(openaiBody, options = {}) {
 const THINK_PHASES = new Set(['think', 'thinking', 'thinking_summary']);
 
 /**
+ * 免费档配额耗尽的正文特征。
+ *
+ * 🔴 关键坑（2026-10 实测，见 AGENTS.md）：Qwen 免费档把「今日对话次数已达上限」
+ * 当成**普通回复正文 + HTTP 200 + 正常 SSE** 发回来 —— 没有任何 error 帧、
+ * 没有任何非 200 状态码。也就是说：代理不认它，客户端会把它当真答案收下，
+ * 而这个号剩下的 19 次额度也一起报废。这里把这段文案识别出来。
+ */
+const QUOTA_EXHAUSTED_RE =
+  /(今日?(?:的)?(?:对话)?(?:次数|额度|使用)[^。\n]{0,12}(?:已)?(?:达到|达|用)[^。\n]{0,6}上限|已达?(?:到)?(?:今日)?(?:使用)?(?:次数|额度)?上限|次数已(?:达到|用完|用尽)|请(?:明天|次日)再来|daily (?:limit|quota) (?:reached|exceeded)|too many requests? today)/i;
+
+function isQuotaExhaustedText(text) {
+  if (!text) return false;
+  return QUOTA_EXHAUSTED_RE.test(String(text));
+}
+
+/**
  * 解析上游 SSE。每个有效片段都会调用 onData(line)。
  *  - thinking_summary：`extra.summary_thought.content` —— 不断增长的段落数组，
  *    只输出新增部分（增量），避免重复发送 reasoning。
@@ -452,6 +468,47 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
 
   let bufferedDataLines = [];
   let toolCallDetected = false;
+
+  // 免费档配额闸门：配额文案（「今日对话次数已达上限…」）是普通正文帧回来的，
+  // 但句子总在开头。所以正文开头那一小段先按住不发：一确认是配额文案就整段丢掉、
+  // 报错让上层换号；确认不是就原样放行，对流式只是迟一个分片。
+  const QUOTA_GATE_MAX_CHARS = 48;
+  let quotaHit = false;
+  let quotaText = '';
+  let gatedContent = '';
+  let gateClosed = false;
+
+  const gateContent = (text) => {
+    if (!text) return '';
+    if (gateClosed) return text;
+    gatedContent += text;
+    if (isQuotaExhaustedText(gatedContent)) {
+      quotaHit = true;
+      quotaText = gatedContent.slice(0, 200);
+      gateClosed = true;
+      gatedContent = '';
+      return '';
+    }
+    // 出现句读或攒够长度，说明这是正常回答，放行
+    if (gatedContent.length >= QUOTA_GATE_MAX_CHARS || /[。！？!?\n]/.test(gatedContent)) {
+      gateClosed = true;
+      const out = gatedContent;
+      gatedContent = '';
+      return out;
+    }
+    return '';
+  };
+
+  // 收流/收尾时主动排空闸门：流都结束了还没攒够长度、也没撞上句读，
+  // 说明这句就是短回答（比如只有一个词的回复），不能再扣着不发。
+  // 已经判定是配额的除外 —— 那种情况不该吐出任何内容。
+  const flushGate = () => {
+    if (gateClosed || quotaHit) return '';
+    gateClosed = true;
+    const out = gatedContent;
+    gatedContent = '';
+    return out;
+  };
 
   const emitData = (lineStr) => {
     if (requireToolCall && !toolCallDetected) {
@@ -670,8 +727,7 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
       const accEmail = (opts.account && opts.account.email) ? opts.account.email : 'active account';
       const msg = `RateLimited: Account ${accEmail} reached Qwen daily limit (wait ~${waitHours}h). Switching to next account.`;
       return close(new Error(msg));
-    }
-    if (obj.ret && Array.isArray(obj.ret) && obj.ret.join('').includes('RGV587_ERROR')) {
+    }    if (obj.ret && Array.isArray(obj.ret) && obj.ret.join('').includes('RGV587_ERROR')) {
       const captchaUrl = (obj.data && obj.data.url) || '';
       return close(new Error(`WAF_CAPTCHA_CHALLENGE:${captchaUrl}`));
     }
@@ -732,6 +788,12 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
       thinkBuffer += content;
     }
     const directContent = processThinkBuffer(false);
+    // 过了配额闸门才往下发；被闸门扣住的分片按空串处理
+    const gated = gateContent(directContent);
+    if (quotaHit) {
+      close(new Error(`DailyQuotaExhausted: ${quotaText.trim()}`));
+      return;
+    }
 
     if (reasoning) {
       emittedOutput = true;
@@ -740,17 +802,17 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
       onData(`data: ${JSON.stringify(chunk)}\n\n`);
     }
 
-    if (directContent && toolParser) {
-      const parsed = toolParser.push(directContent);
+    if (gated && toolParser) {
+      const parsed = toolParser.push(gated);
       if (parsed.textDelta) {
         const chunk = chunkId();
         chunk.choices[0].delta.content = parsed.textDelta;
         emitData(`data: ${JSON.stringify(chunk)}\n\n`);
       }
       if (parsed.calls.length > 0) writeToolCallDeltas(parsed.calls);
-    } else if (directContent) {
+    } else if (gated) {
       const chunk = chunkId();
-      chunk.choices[0].delta.content = directContent;
+      chunk.choices[0].delta.content = gated;
       emitData(`data: ${JSON.stringify(chunk)}\n\n`);
     }
 
@@ -764,7 +826,11 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
       (phase === 'answer' ||
         (phase === undefined && Object.prototype.hasOwnProperty.call(delta, 'content')));
     if (finishedAnswer || choice.finish_reason) {
-      const finalDirectContent = processThinkBuffer(true);
+      const finalDirectContent = gateContent(processThinkBuffer(true)) + flushGate();
+      if (quotaHit) {
+        close(new Error(`DailyQuotaExhausted: ${quotaText.trim()}`));
+        return;
+      }
       if (finalDirectContent) {
         if (toolParser) {
           const parsed = toolParser.push(finalDirectContent);
@@ -795,7 +861,15 @@ function parseQwenSSE(stream, onData, onDone, opts = {}) {
   });
   stream.on('end', () => {
     if (buffer) handleLine(buffer);
-    const flushContent = processThinkBuffer(true);
+    if (quotaHit) {
+      close(new Error(`DailyQuotaExhausted: ${quotaText.trim()}`));
+      return;
+    }
+    const flushContent = gateContent(processThinkBuffer(true)) + flushGate();
+    if (quotaHit) {
+      close(new Error(`DailyQuotaExhausted: ${quotaText.trim()}`));
+      return;
+    }
     if (flushContent) {
       if (toolParser) {
         const parsed = toolParser.push(flushContent);
@@ -1014,4 +1088,5 @@ module.exports = {
   collectNonStream,
   pipeThroughOpenAI,
   getChatType,
+  isQuotaExhaustedText,
 };
